@@ -60,8 +60,7 @@ export default class extends Controller {
   }
 
   get #serviceWorkerRegistration() {
-    const hostAndProtocol = window.location.protocol + '//' + window.location.host;
-    return navigator.serviceWorker.getRegistration(hostAndProtocol)
+    return navigator.serviceWorker.getRegistration(window.location.origin)
   }
 
   #registerServiceWorker() {
