@@ -2,6 +2,13 @@
 # interpolate stored markup into a response without this normalization.
 using Libdl
 const XML_LIBRARY = Libdl.find_library(["xml2", "libxml2.so.2", "libxml2.so.16"])
+
+function initialize_media!()
+    # Older libxml versions require initialization before concurrent parsing.
+    ccall((:xmlInitParser, XML_LIBRARY), Cvoid, ())
+    return nothing
+end
+
 struct HTMLNode
     private::Ptr{Cvoid}
     kind::Cint
@@ -1413,7 +1420,9 @@ WHERE a.record_type=? AND a.record_id=? AND a.name=? ORDER BY a.id DESC LIMIT 1
 end
 
 function read_blob(app, blob)
-    return read(blob_path(app, blob.key))
+    return lock(app.storage_lock) do
+        return read(blob_path(app, blob.key))
+    end
 end
 
 function detach_attachments!(app, record_type, id; name = nothing)
@@ -1458,15 +1467,17 @@ end
 
 function purge_storage!(app, keys)
     lock(app.lock) do
-        for key in keys
-            # Recheck after commit, so rollback can never delete a live file.
-            isnothing(
-                scalar(app, "SELECT 1 FROM active_storage_blobs WHERE key=?", (key,)),
-            ) || continue
-            path = blob_path(app, key)
-            for suffix in
-                ("", "-thumbnail.webp", "-no-thumbnail", "-avatar.webp", "-logo.png")
-                rm(path * suffix; force = true)
+        lock(app.storage_lock) do
+            for key in keys
+                # Recheck after commit, so rollback can never delete a live file.
+                isnothing(
+                    scalar(app, "SELECT 1 FROM active_storage_blobs WHERE key=?", (key,)),
+                ) || continue
+                path = blob_path(app, key)
+                for suffix in
+                    ("", "-thumbnail.webp", "-no-thumbnail", "-avatar.webp", "-logo.png")
+                    rm(path * suffix; force = true)
+                end
             end
         end
     end
@@ -1479,8 +1490,10 @@ function attach_upload!(app, record_type, id, name, upload::UploadedFile; cleanu
     isempty(filename) && (filename = "attachment")
     key = replace(string(uuid4()), "-"=>"")
     path = blob_path(app, key)
-    mkpath(dirname(path))
-    write(path, upload.data)
+    lock(app.storage_lock) do
+        mkpath(dirname(path))
+        return write(path, upload.data)
+    end
     timestamp = nowstr()
     content_type =
         occursin(r"^[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+$", upload.content_type) ?
@@ -1550,6 +1563,22 @@ function blob_presentation(ctx, blob)
 end
 
 function attachment_preview(app, blob)
+    return lock(app.storage_lock) do
+        return attachment_preview_locked(app, blob)
+    end
+end
+
+function render_variant(f::F, destination) where {F}
+    # Keep the extension for encoder selection, and publish only complete bytes.
+    return mktempdir(dirname(destination); prefix = ".variant-") do directory
+        temporary = joinpath(directory, basename(destination))
+        f(temporary)
+        Base.Filesystem.rename(temporary, destination)
+        return destination
+    end
+end
+
+function attachment_preview_locked(app, blob)
     content_type = string(coalesce(blob.content_type, ""))
     (startswith(content_type, "image/") || startswith(content_type, "video/")) ||
         return nothing
@@ -1586,15 +1615,17 @@ function attachment_preview(app, blob)
                 ),
             )
             0 < width <= 250_000_000 ÷ max(height, 1) && height > 0 || return nothing
-            run(
-                pipeline(
-                    safe_vips(
-                        `vips thumbnail $source $destination 1200 --height 800 --size down`,
-                    );
-                    stdout = devnull,
-                    stderr = devnull,
-                ),
-            )
+            render_variant(destination) do temporary
+                return run(
+                    pipeline(
+                        safe_vips(
+                            `vips thumbnail $source $temporary 1200 --height 800 --size down`,
+                        );
+                        stdout = devnull,
+                        stderr = devnull,
+                    ),
+                )
+            end
         else
             formats = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,mpeg,mpegts,ogg"
             metadata = JSON3.read(
@@ -1610,13 +1641,15 @@ function attachment_preview(app, blob)
             width, height = Int(stream.width), Int(stream.height)
             0 < width <= 250_000_000 ÷ max(height, 1) && height > 0 || return nothing
             filter = "scale=w=min(1200\\,iw):h=min(800\\,ih):force_original_aspect_ratio=decrease"
-            run(
-                pipeline(
-                    `ffmpeg -v error -nostdin -y -protocol_whitelist file,pipe -format_whitelist $formats -i $source -frames:v 1 -vf $filter $destination`;
-                    stdout = devnull,
-                    stderr = devnull,
-                ),
-            )
+            render_variant(destination) do temporary
+                return run(
+                    pipeline(
+                        `ffmpeg -v error -nostdin -y -protocol_whitelist file,pipe -format_whitelist $formats -i $source -frames:v 1 -vf $filter $temporary`;
+                        stdout = devnull,
+                        stderr = devnull,
+                    ),
+                )
+            end
         end
         return isfile(destination) ? destination : nothing
     catch error
@@ -1694,6 +1727,12 @@ function media_range_response(ctx, response)
 end
 
 function avatar_variant(app, blob; logo = false)
+    return lock(app.storage_lock) do
+        return avatar_variant_locked(app, blob; logo)
+    end
+end
+
+function avatar_variant_locked(app, blob; logo = false)
     # Reuse Rails' processed variant bytes when reading a reference fixture.
     variant = qone(
         app,
@@ -1742,15 +1781,17 @@ JOIN active_storage_blobs b ON b.id=a.blob_id WHERE v.blob_id=? ORDER BY v.id LI
                 ),
             )
             0 < width <= 250_000_000 ÷ max(height, 1) && height > 0 || return nothing
-            run(
-                pipeline(
-                    safe_vips(
-                        `vips thumbnail $source $destination $limit --height $limit --size down`,
-                    );
-                    stdout = devnull,
-                    stderr = devnull,
-                ),
-            )
+            render_variant(destination) do temporary
+                return run(
+                    pipeline(
+                        safe_vips(
+                            `vips thumbnail $source $temporary $limit --height $limit --size down`,
+                        );
+                        stdout = devnull,
+                        stderr = devnull,
+                    ),
+                )
+            end
         catch
             return nothing
         end
@@ -1827,9 +1868,11 @@ function route_media(ctx)
         isnothing(id) && return html_response("Not found"; status = 404)
         blob = qone(ctx.app, "SELECT * FROM active_storage_blobs WHERE id=?", (id,))
         isnothing(blob) && return html_response("Not found"; status = 404)
-        path = attachment_preview(ctx.app, blob)
-        isnothing(path) && return html_response("Not found"; status = 404)
-        return media_response(read(path), "image/webp")
+        return lock(ctx.app.storage_lock) do
+            path = attachment_preview(ctx.app, blob)
+            isnothing(path) && return html_response("Not found"; status = 404)
+            return media_response(read(path), "image/webp")
+        end
     end
     route =
         match(r"^/rails/active_storage/blobs/(?:redirect|proxy)/([^/]+)/[^/]+$", ctx.path)

@@ -82,6 +82,79 @@ auth_body(response) = String(copy(response.body))
                 @test AuthWeb.verify_token(app, "purpose", "bad") === nothing
                 @test AuthWeb.verify_token(app, "purpose", repeat("a", 8193)) === nothing
                 @test AuthWeb.verify_token(app, "purpose", nothing) === nothing
+                # RFC 4231 case 2 fixes the algorithm independently of either
+                # token implementation; the following vectors cover binary
+                # inputs and SHA-256's HMAC key-length boundary.
+                @test bytes2hex(
+                    AuthWeb.token_hmac("Jefe", "what do ya want for nothing?"),
+                ) == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+                for secret in ("", "key\0value", repeat("k", 64), repeat("k", 131))
+                    @test AuthWeb.token_hmac(secret, "message\0☕") == hmac_sha256(
+                        Vector{UInt8}(codeunits(secret)),
+                        codeunits("message\0☕"),
+                    )
+                end
+                # Tokens signed before the optimization must remain byte-for-
+                # byte compatible, including every Base64 tail length.
+                for value in ("", "a", "ab", "abc", "abcd", "payload ☕", "\0", "\uffff")
+                    payload = AuthWeb.urlbase64(value)
+                    signature = bytes2hex(
+                        hmac_sha256(
+                            Vector{UInt8}(codeunits(app.secret)),
+                            codeunits("purpose:" * payload),
+                        ),
+                    )
+                    legacy_native = payload * "." * signature
+                    @test AuthWeb.signed_token(app, "purpose", value) == legacy_native
+                    @test AuthWeb.verify_token(app, "purpose", legacy_native) == value
+                    @test all(eachindex(signature)) do index
+                        changed = collect(codeunits(signature))
+                        changed[index] =
+                            changed[index] == UInt8('0') ? UInt8('1') : UInt8('0')
+                        return AuthWeb.verify_token(
+                            app,
+                            "purpose",
+                            payload * "." * String(changed),
+                        ) === nothing
+                    end
+                end
+                # Even an authentic digest cannot make malformed Base64URL or
+                # invalid UTF-8 into an accepted native token.
+                for payload in ("A", "AA=", "A!", "AB", "AAF", "_w", "é", "a.a")
+                    signature = bytes2hex(
+                        hmac_sha256(
+                            Vector{UInt8}(codeunits(app.secret)),
+                            codeunits("purpose:" * payload),
+                        ),
+                    )
+                    @test AuthWeb.verify_token(
+                        app,
+                        "purpose",
+                        payload * "." * signature,
+                    ) === nothing
+                end
+                @test AuthWeb.verify_token(app, "purpose", ".") === nothing
+                @test !AuthWeb.secure_equal_hex("", zeros(UInt8, 32))
+                boundary_value = repeat("x", 6095)
+                boundary_token = AuthWeb.signed_token(app, "purpose", boundary_value)
+                @test ncodeunits(boundary_token) == 8192
+                @test AuthWeb.verify_token(app, "purpose", boundary_token) == boundary_value
+                @test AuthWeb.verify_token(
+                    app,
+                    "purpose",
+                    AuthWeb.signed_token(app, "purpose", boundary_value * "x"),
+                ) === nothing
+                token_tasks = map(1:16) do task_index
+                    Threads.@spawn begin
+                        local_app = (secret = "concurrent token key $task_index",)
+                        all(1:20) do index
+                            value = "token $task_index/$index ☕"
+                            signed = AuthWeb.signed_token(local_app, "parallel", value)
+                            AuthWeb.verify_token(local_app, "parallel", signed) == value
+                        end
+                    end
+                end
+                @test all(fetch, token_tasks)
                 @test AuthWeb.secure_equal("equal", "equal")
                 @test !AuthWeb.secure_equal("equal", "equaL")
                 @test !AuthWeb.secure_equal("equal", "shorter")
@@ -105,6 +178,37 @@ auth_body(response) = String(copy(response.body))
                 @test_throws ArgumentError AuthWeb.qr_svg("")
                 @test_throws ArgumentError AuthWeb.qr_svg("\0")
                 @test_throws ArgumentError AuthWeb.qr_svg(repeat("x", 2049))
+            end
+
+            @testset "cookie parsing" begin
+                cookie_request(value) = HTTP.Request("GET", "/", ["Cookie" => value])
+                for header in (
+                    "session_token=first",
+                    "theme=light; session_token=first; ui=full",
+                    "; ; ignored; session_token=first; session_token=second",
+                    " session_token=first  ",
+                )
+                    @test AuthWeb.request_cookie(cookie_request(header), "session_token") ==
+                          "first"
+                end
+                @test AuthWeb.request_cookie(
+                    cookie_request("session_token=hello%20world%3D%2B"),
+                    "session_token",
+                ) == "hello world=+"
+                @test AuthWeb.request_cookie(
+                    cookie_request("session_token=a=b+"),
+                    "session_token",
+                ) == "a=b+"
+                @test AuthWeb.request_cookie(
+                    cookie_request("session_token="),
+                    "session_token",
+                ) == ""
+                @test AuthWeb.request_cookie(
+                    cookie_request("session_token_extra=wrong"),
+                    "session_token",
+                ) == ""
+                @test AuthWeb.request_cookie(HTTP.Request("GET", "/"), "session_token") ==
+                      ""
             end
 
             @test auth_test_request(app, "GET", "/session/new").status == 302
@@ -143,6 +247,63 @@ auth_body(response) = String(copy(response.body))
                 app,
                 "SELECT count(*) FROM memberships WHERE user_id = 1",
             ) == 1
+            @testset "fresh typed cache identity" begin
+                request = HTTP.Request("GET", "/", ["Cookie" => admin])
+                token = AuthWeb.session_token(app, request)
+                identity = AuthWeb.cached_identity(app, token)
+                @test identity == (
+                    id = Int64(1),
+                    session_id = Int64(
+                        AuthWeb.scalar(
+                            app,
+                            "SELECT id FROM sessions WHERE token=?",
+                            (token,),
+                        ),
+                    ),
+                    refresh_due = false,
+                    room_access = true,
+                )
+                @test AuthWeb.cached_identity(app, token, "1") == identity
+                @test AuthWeb.cached_identity(app, "unknown session") === nothing
+                @test !AuthWeb.cached_identity(app, token, "999999").room_access
+                @test !AuthWeb.cached_identity(app, token, "not a room").room_access
+                AuthWeb.execute!(app, "BEGIN")
+                try
+                    AuthWeb.execute!(
+                        app,
+                        "DELETE FROM memberships WHERE user_id=1 AND room_id=1",
+                    )
+                    revoked = AuthWeb.cached_identity(app, token, "1")
+                    @test revoked.id == 1
+                    @test !revoked.room_access
+                    @test AuthWeb.cached_identity(app, token).room_access
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE sessions SET last_active_at='2000-01-01 00:00:00' WHERE token=?",
+                        (token,),
+                    )
+                    revoked = AuthWeb.cached_identity(app, token, "1")
+                    @test revoked.refresh_due
+                    AuthWeb.mark_session_activity!(request, revoked)
+                    @test request.context[:session_activity] == identity.session_id
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE sessions SET last_active_at='not a timestamp' WHERE token=?",
+                        (token,),
+                    )
+                    @test !AuthWeb.cached_identity(app, token).refresh_due
+                    AuthWeb.execute!(app, "UPDATE users SET status=1 WHERE id=1")
+                    @test AuthWeb.cached_identity(app, token) === nothing
+                    AuthWeb.execute!(app, "UPDATE users SET status=0,role=2 WHERE id=1")
+                    @test AuthWeb.cached_identity(app, token, "1") === nothing
+                    AuthWeb.execute!(app, "UPDATE users SET role=1 WHERE id=1")
+                    AuthWeb.execute!(app, "DELETE FROM sessions WHERE token=?", (token,))
+                    @test AuthWeb.cached_identity(app, token) === nothing
+                finally
+                    AuthWeb.execute!(app, "ROLLBACK")
+                end
+                @test AuthWeb.cached_identity(app, token, "1") == identity
+            end
             @test auth_test_request(
                 app,
                 "POST",
@@ -563,6 +724,12 @@ auth_body(response) = String(copy(response.body))
                 @test auth_test_request(app, "GET", "/rooms/1"; cookie = admin).status ==
                       200
                 @test AuthWeb.scalar(app, "SELECT total_changes()") == changes
+
+                closed_app = AuthWeb.WebApp(joinpath(directory, "closed.sqlite3"))
+                close(closed_app)
+                request.context[:session_activity] = 1
+                @test AuthWeb.refresh_session_activity!(closed_app, request) === nothing
+                @test !haskey(request.context, :session_activity)
             end
 
             @testset "signed and bounded return to requested page" begin

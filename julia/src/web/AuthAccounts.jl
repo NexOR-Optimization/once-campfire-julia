@@ -26,37 +26,94 @@ end
 
 random_token(bytes = 32) = urlbase64(rand(RandomDevice(), UInt8, bytes))
 
+function token_hmac(secret, message)
+    # OpenSSL uses the CPU's SHA extensions where available. Each call owns its
+    # output; request tasks never share mutable digest state.
+    output = Vector{UInt8}(undef, 32)
+    output_length = Ref{Cuint}(0)
+    digest = ccall((:EVP_sha256, CRYPTO_LIBRARY), Ptr{Cvoid}, ())
+    result = ccall(
+        (:HMAC, CRYPTO_LIBRARY),
+        Ptr{UInt8},
+        (Ptr{Cvoid}, Ptr{UInt8}, Cint, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Ref{Cuint}),
+        digest,
+        secret,
+        ncodeunits(secret),
+        message,
+        ncodeunits(message),
+        output,
+        output_length,
+    )
+    result != C_NULL && output_length[] == 32 || error("Token HMAC failed")
+    return output
+end
+
+function secure_equal_hex(signature, digest)
+    ncodeunits(signature) == 2length(digest) || return false
+    difference = UInt8(0)
+    for index in eachindex(digest)
+        byte = digest[index]
+        difference |=
+            codeunit(signature, 2index - 1) ⊻
+            codeunit("0123456789abcdef", Int(byte >> 4) + 1)
+        difference |=
+            codeunit(signature, 2index) ⊻ codeunit("0123456789abcdef", Int(byte & 0x0f) + 1)
+    end
+    return difference == 0
+end
+
+const TOKEN_BASE64_VALUES = ntuple(256) do index
+    byte = UInt8(index - 1)
+    0x41 <= byte <= 0x5a && return byte - 0x41
+    0x61 <= byte <= 0x7a && return byte - 0x61 + 0x1a
+    0x30 <= byte <= 0x39 && return byte - 0x30 + 0x34
+    byte == 0x2d && return 0x3e
+    byte == 0x5f && return 0x3f
+    return 0xff
+end
+
+function decode_token_payload(payload)
+    # Native tokens always contain canonical, unpadded Base64URL. Decode into
+    # one buffer instead of allocating replacements, padding, and an IO pipe.
+    count = ncodeunits(payload)
+    rem(count, 4) == 1 && return nothing
+    output = Vector{UInt8}(undef, div(3count, 4))
+    state = UInt32(0)
+    available = 0
+    index = 1
+    for byte in codeunits(payload)
+        value = TOKEN_BASE64_VALUES[Int(byte)+1]
+        value == 0xff && return nothing
+        state = (state << 6) | value
+        available += 6
+        if available >= 8
+            available -= 8
+            output[index] = (state >> available) % UInt8
+            index += 1
+        end
+    end
+    state & ((UInt32(1) << available) - UInt32(1)) == 0 || return nothing
+    decoded = String(output)
+    return isvalid(decoded) ? decoded : nothing
+end
+
 function signed_token(app, purpose, value)
     payload = urlbase64(string(value))
-    signature = bytes2hex(
-        hmac_sha256(
-            Vector{UInt8}(codeunits(app.secret)),
-            codeunits(purpose * ":" * payload),
-        ),
-    )
+    signature = bytes2hex(token_hmac(app.secret, purpose * ":" * payload))
     return payload * "." * signature
 end
 
 function verify_token(app, purpose, token)
     token isa AbstractString || return nothing
     ncodeunits(token) <= 8192 || return nothing
-    parts = split(token, '.'; limit = 2)
-    length(parts) == 2 || return nothing
-    payload, signature = parts
-    expected = bytes2hex(
-        hmac_sha256(
-            Vector{UInt8}(codeunits(app.secret)),
-            codeunits(purpose * ":" * payload),
-        ),
-    )
-    secure_equal(signature, expected) || return nothing
-    try
-        decoded = String(unurlbase64(payload))
-        return isvalid(decoded) ? decoded : nothing
-    catch error
-        error isa ArgumentError || rethrow()
-        return nothing
-    end
+    delimiter = findfirst('.', token)
+    delimiter === nothing && return nothing
+    payload = SubString(token, firstindex(token), prevind(token, delimiter))
+    signature = SubString(token, nextind(token, delimiter))
+    ncodeunits(signature) == 64 || return nothing
+    expected = token_hmac(app.secret, purpose * ":" * payload)
+    secure_equal_hex(signature, expected) || return nothing
+    return decode_token_payload(payload)
 end
 
 function rails_signing_key(app, salt)
@@ -189,9 +246,12 @@ function password_matches(password::AbstractString, digest)
 end
 
 function request_cookie(req, name)
-    for field in split(HTTP.header(req, "Cookie", ""), ';')
-        pair = split(strip(field), '='; limit = 2)
-        length(pair) == 2 && pair[1] == name && return HTTP.unescapeuri(pair[2])
+    for field in eachsplit(HTTP.header(req, "Cookie", ""), ';')
+        field = strip(field)
+        delimiter = findfirst('=', field)
+        delimiter === nothing && continue
+        SubString(field, firstindex(field), prevind(field, delimiter)) == name || continue
+        return HTTP.unescapeuri(SubString(field, nextind(field, delimiter)))
     end
     return ""
 end
@@ -225,6 +285,40 @@ WHERE s.token = ? AND u.status = 0 AND u.role != 2
     return row_user(user)
 end
 
+function cached_identity(app, token, room_id::Union{Nothing,AbstractString} = nothing)
+    # Cache hits still authorize against the current database snapshot. Fixed
+    # fields keep this hot path concrete without copying a dynamic SQL row.
+    sql, parameters = if room_id === nothing
+        (
+            """SELECT u.id,s.id,
+datetime(s.last_active_at)<=datetime('now','-1 hour'),1
+FROM users u JOIN sessions s ON s.user_id=u.id
+WHERE s.token=? AND u.status=0 AND u.role!=2""",
+            (token,),
+        )
+    else
+        (
+            """SELECT u.id,s.id,
+datetime(s.last_active_at)<=datetime('now','-1 hour'),
+EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.room_id=?)
+FROM users u JOIN sessions s ON s.user_id=u.id
+WHERE s.token=? AND u.status=0 AND u.role!=2""",
+            (room_id, token),
+        )
+    end
+    return withquery(app, sql, parameters) do rows
+        for row in rows
+            return (
+                id = Int64(row[1])::Int64,
+                session_id = Int64(row[2])::Int64,
+                refresh_due = Bool(coalesce(row[3], 0))::Bool,
+                room_access = Bool(row[4])::Bool,
+            )
+        end
+        return nothing
+    end
+end
+
 function mark_session_activity!(req, row)
     row.refresh_due == 1 && (req.context[:session_activity] = Int64(row.session_id))
     return nothing
@@ -234,6 +328,9 @@ function refresh_session_activity!(app, req)
     id = pop!(req.context, :session_activity, nothing)
     id === nothing && return nothing
     lock(app.lock) do
+        if app.closing
+            return nothing
+        end
         timestamp = nowstr()
         return execute!(
             app,

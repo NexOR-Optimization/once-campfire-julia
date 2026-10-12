@@ -12,7 +12,7 @@ Use Julia 1.13.1 and install the native runtime dependencies. On Debian/Ubuntu:
 ```sh
 sudo apt-get install libcrypt1 libqrencode4 libssl3 libxml2 libvips-tools ffmpeg
 julia --project=julia -e 'using Pkg; Pkg.instantiate()'
-julia/bin/campfire /tmp/campfire-julia/production.sqlite3 3001
+JULIA_NUM_THREADS=4,1 julia/bin/campfire /tmp/campfire-julia/production.sqlite3 3001
 ```
 
 Open http://127.0.0.1:3001 and complete first-run setup. The parent directory and
@@ -34,6 +34,7 @@ Configuration:
 | `DATABASE_PATH` | `storage/julia.sqlite3`, used when the positional path is omitted |
 | `PORT` | `3001`, overridden by the second positional argument |
 | `CAMPFIRE_HOST` | `127.0.0.1` |
+| `JULIA_NUM_THREADS` | Julia thread pools; use `4,1` for four workers and one I/O thread (Docker defaults to `auto`) |
 | `CAMPFIRE_ORIGIN` | Canonical public origin; set this to the HTTPS URL behind a proxy |
 | `STORAGE_PATH` | `storage/` beside the database |
 | `SECRET_KEY_BASE` | Generated and persisted with mode 0600 if absent |
@@ -46,12 +47,27 @@ transfers, and point `STORAGE_PATH` at its attachment files. Startup installs th
 current schema additions and message-count triggers. Back up the database and
 storage together. This process does not run Ruby or Redis.
 
-A single application lock owns database access and prepared statements. Socket
-writes, webhook calls, link-preview fetches and push delivery run outside that
-lock. Rendering and writes still allocate; GC remains enabled. Websocket delivery
+HTTP socket I/O and parsing stay on one interactive thread. Application requests
+run on the default worker pool. Room, message, sidebar and search GETs borrow
+exclusive SQLite readers, with up to four readers by default when
+multiple workers are available. Each reader owns its prepared statements,
+observer connection and response cache shard. The shards share a total limit of
+64 MiB and 512 entries; authentication and membership checks still query current
+database state, and external commits invalidate cached responses. Writes and
+other routes use the original writer connection. Session activity updates return
+to that writer before a reader lease completes.
+
+Socket writes, webhook calls, link-preview fetches and push delivery run outside
+database locks. Media variants publish atomically under a shared storage lock.
+Rendering and writes still allocate; GC remains enabled. Websocket delivery
 and asynchronous notifications are local to this process. Multiple independently
 running Julia replicas do not share a realtime broker or a durable job queue.
 Use one server process for now.
+
+The worker transport reuses HTTP.jl's parser, WebSocket handling and server
+lifecycle, with a default limit of 4,096 connections. Its adapter uses internal
+HTTP.jl 1.11 APIs isolated in `src/web/Transport.jl`; rerun its focused transport
+tests when upgrading HTTP.jl. Close the HTTP server before closing `WebApp`.
 
 ## Docker
 
@@ -75,6 +91,9 @@ julia --project=test test/julia_web_auth.jl
 julia --project=test test/julia_web_messages.jl
 julia --project=test test/julia_web_views.jl
 julia --project=test test/julia_web_server.jl
+julia --threads=4,1 --project=test test/julia_web_readers.jl
+julia --threads=4,1 --project=test test/julia_web_transport.jl
+julia --threads=4,1 --project=test test/julia_web_media.jl
 julia --project=test test/julia_web_cable.jl
 julia --project=test test/julia_web_unfurl.jl
 julia --project=test test/julia_web_push.jl
@@ -103,9 +122,91 @@ The browser flow and HTTP contracts complement the focused tests; neither proves
 complete production equivalence to every Rails behavior. The comparison adapter
 below adds Julia to the shared harness without editing its checkout.
 
-## Full-server comparison, 2026-10-12
+## Optimized full-server comparison, 2026-10-12
 
-The current Julia server is slower than the C and Rust implementations on this
+Read throughput doubled after moving application work to worker threads, adding
+exclusive SQLite readers, and sending known response lengths to avoid extra
+chunk-framing socket writes. The shared cache budget remains 64 MiB, and GC
+remains enabled. Median requests/second over three runs:
+
+| Workload | Julia before | Julia now | Speedup | Rust reference | C reference |
+|---|---:|---:|---:|---:|---:|
+| Room page | 27,848 | 57,225 | 2.05× | 76,894 | 108,868 |
+| Messages page | 27,902 | 58,518 | 2.10× | 73,102 | 112,285 |
+| Sidebar | 30,276 | 60,748 | 2.01× | 87,414 | 116,207 |
+| Search | 29,452 | 59,651 | 2.03× | 87,199 | 112,151 |
+| Post a message | 2,627 | 2,700 | 1.03× | 5,922 | 4,884 |
+
+Only Julia was rerun in this optimization pass. Rust and C are the earlier
+reference measurements documented below, using the same machine and fixture.
+Their read-throughput leads over Julia shrink from 2.62–2.96× to 1.25–1.46×
+for Rust, and from 3.81–4.02× to 1.88–1.92× for C. Julia's three-run ranges were
+56,793–57,317 for room pages, 58,508–58,532 for messages, 60,469–60,766 for the
+sidebar, 59,438–59,682 for search, and 2,685–2,745 for posts.
+
+With an additional writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia now, req/s | p99 before → now, ms |
+|---|---:|---:|---:|
+| Room page | 26,469 | 53,717 | 3.069 → 1.432 |
+| Messages page | 26,652 | 55,748 | 2.555 → 1.309 |
+| Sidebar | 29,544 | 60,147 | 1.145 → 0.910 |
+| Search | 28,709 | 57,735 | 1.408 → 1.241 |
+
+Every timed writer again acknowledged 80 posts and reported 9.9 posts/second.
+The latency values are medians of per-run p99s, not pooled percentiles.
+
+There are costs. Normal-profile room p99 increased from 0.617 to 0.727 ms, and
+post p99 from 13.047 to 18.783 ms. Reads now use about 381% CPU versus 100%,
+with the same four-core allocation. Maximum observed normal-profile container
+memory increased from 576.7 to 1,464.3 MiB. Those are cgroup lifetime peaks,
+including page cache and warmup, not heap allocation counts. This improves
+throughput and latency under the paced writer; memory use and posting latency
+still need work.
+
+### What changed and what was checked
+
+Each reader owns its SQLite statements, cache, signing-key dictionary and
+connection-local observer epoch. Every cache hit still checks the current
+session, user status, role and room membership. Combined authorization queries
+return concrete Julia fields. Session activity and event delivery stay on the
+writer. Lazy media generation and deletion share a storage lock, and encoded
+variants become visible through atomic rename.
+
+Profiling showed why putting complete connections on worker threads regressed:
+Julia's global I/O lock became a bottleneck. Keeping I/O on the interactive
+thread and dispatching application work to workers improved the diagnostic run;
+explicit Content-Length removed further writes. Native token parsing and
+verification also improved from 2.097 to 1.238 µs, reducing Julia heap allocation
+from 5,072 to 560 bytes per call. These isolated allocation figures exclude
+OpenSSL's native allocations; the complete request path still allocates.
+
+768 focused assertions passed, covering authorization, invalidation, reader
+ownership, shutdown, HTTP framing, WebSockets and concurrent media access.
+The unchanged Chromium smoke test passed. The two benchmark profiles validated
+17,579,923 responses including warmups, with 11,190,998 timed responses, and
+reconciled 98,587 acknowledged writes against exact SQLite/FTS records.
+All 54 primary load-generator invocations and their 24 nested mixed-writer
+samples had zero errors and zero invalid responses.
+
+The hardware, affinity, fixture, load generator, contracts, five-second warmup,
+eight-second measurement and 16-client concurrency match the baseline below.
+Three Julia rounds were run per profile, with fresh disposable data each round;
+all builds and tests stopped before timing. `JULIA_NUM_THREADS=4` under Julia
+1.13.1 supplies four default workers and one interactive thread. The production
+image is `sha256:1f538fb653d6755f5cb1fd992354d2ae9a31a18cfbf2734eb5c4c92180303053`,
+built from the working tree based on `9ea9bf1`; its runtime source digest is
+`95d18a144a40d616c6e74b32712cd30677e0b186b7787989377b827363f2323b`.
+Maximum observed load-generator CPU was 68.94%, with four cores available.
+
+Raw samples, exact write receipts with hashes, source/image metadata, diagnostic
+profiles and before/after analysis are retained under
+`tmp/julia-full-server/2026-10-12-parallel/`. The earlier results remain under
+`tmp/julia-full-server/2026-10-12/`. These artifacts are ignored by Git.
+
+## Baseline full-server comparison, 2026-10-12
+
+The initial Julia server was slower than the C and Rust implementations on this
 workload. These measurements include real HTTP, authentication, SQLite, gzip,
 and message persistence, using the same shared fixture and response contracts.
 Each cell shows median requests/second followed by the three-run minimum–maximum.
@@ -142,11 +243,10 @@ milliseconds; they are not pooled percentiles:
 | Room page, with paced writer | 3.069 | 0.424 | 0.364 |
 
 Julia used approximately one CPU core despite having four available. C and Rust
-used most of their four-core allocation. Julia's request path currently
-serializes database work through one connection and one application lock; cache
-miss rendering also holds that lock. The observed CPU use and larger latency
-increase under writes make concurrent request handling, database ownership and
-cache-miss work the next profiling targets. These results do not isolate GC cost.
+used most of their four-core allocation. Julia's initial request path
+serialized database work through one connection and one application lock; cache
+miss rendering also held that lock. The observed CPU use and larger latency
+increase under writes motivated the concurrency changes measured above. These results do not isolate GC cost.
 GC was enabled throughout.
 
 Maximum observed container memory peaks during the normal profile were
@@ -194,13 +294,15 @@ receipts are retained locally under the ignored
 
 ### Reproduce
 
-Build each production image and the shared release load generator first. Put
+These commands measure the current checkout. Build each production image and
+the shared release load generator first. Put
 the C and Rust checkouts under `WORKSPACE/once-campfire-c` and
 `WORKSPACE/once-campfire-rust`. Generate `FIXTURE` with the shared `bin/seed`.
 The adapter uses this checkout for Julia; `JULIA_SOURCE` overrides that path.
 
 ```sh
-export JULIA_IMAGE=campfire-julia:local
+docker build -f julia/Dockerfile -t campfire-julia:parallel .
+export JULIA_IMAGE=campfire-julia:parallel
 export C_IMAGE=campfire-c:local
 export RUST_IMAGE=campfire-rust:bench-6838ead
 export BENCH_ENV_FILE="$FIXTURE/reference.env"

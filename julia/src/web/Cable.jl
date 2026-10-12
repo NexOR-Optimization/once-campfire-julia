@@ -174,6 +174,7 @@ end
 function publish_events!(app, events)
     isempty(events) && return
     lock(app.lock) do
+        app.closing && return
         for event in events
             if event.kind == :webhook
                 launch_job!(() -> deliver_webhook!(app, event.id, event.payload), app)

@@ -21,6 +21,7 @@ function dispatch(ctx)
 end
 
 function gzip_accepted(req)
+    HTTP.header(req, "Accept-Encoding") == "gzip" && return true
     accepted = false
     for entry in split(lowercase(HTTP.header(req, "Accept-Encoding")), ',')
         fields = strip.(split(entry, ';'))
@@ -57,28 +58,14 @@ function cached_page(app, req, path, generation)
     token === nothing && return nothing
     # A cache hit needs fresh identity and access, but no display fields or
     # template context. Read only the fields needed to authorize this response.
-    identity = qone(
-        app,
-        """SELECT u.id,s.id AS session_id,
-datetime(s.last_active_at)<=datetime('now','-1 hour') AS refresh_due
-FROM users u JOIN sessions s ON s.user_id=u.id
-WHERE s.token=? AND u.status=0 AND u.role!=2""",
-        (token,),
-    )
+    room = match(r"^/rooms/(\d+)", path)
+    identity = cached_identity(app, token, room === nothing ? nothing : room[1])
     identity === nothing && return nothing
     mark_session_activity!(req, identity)
     id = identity.id
     page = get(app.cache, response_cache_key(app, req, id), nothing)
     page === nothing && return nothing
-    room = match(r"^/rooms/(\d+)", path)
-    if room !== nothing &&
-       scalar(
-        app,
-        "SELECT 1 FROM memberships WHERE user_id=? AND room_id=?",
-        (id, room[1]),
-    ) === nothing
-        return nothing
-    end
+    identity.room_access || return nothing
     return generation == cache_generation!(app) ? page : nothing
 end
 
@@ -144,7 +131,31 @@ function handle_request(app::WebApp, req::HTTP.Request)
         return html_response("Forbidden request origin"; status = 403)
     end
     events = Event[]
-    response = lock(app.lock) do
+    response = if cache_route(method, path)
+        with_reader(app) do reader
+            result = request_response(reader, req, parameters, path, method, events)
+            # Finish writer effects before returning the lease, so pool shutdown
+            # cannot close the writer while an in-flight read still needs it.
+            refresh_session_activity!(app, req)
+            publish_events!(app, events)
+            return result
+        end
+    else
+        result = request_response(app, req, parameters, path, method, events)
+        refresh_session_activity!(app, req)
+        publish_events!(app, events)
+        result
+    end
+    # External previews have their own DNS, redirect, size and time limits. They
+    # must yield without holding the application database lock.
+    response isa Context && (response = route_unfurl(response))
+    head && (response.body = UInt8[])
+    return security_headers!(response)
+end
+
+function request_response(app, req, parameters, path, method, events)
+    return lock(app.lock) do
+        app.closing && return html_response("Server shutting down"; status = 503)
         generation = cache_generation!(app)
         execute!(app, method == "GET" ? "BEGIN" : "BEGIN IMMEDIATE")
         active_transaction = true
@@ -207,8 +218,9 @@ function handle_request(app::WebApp, req::HTTP.Request)
                 body = Vector{UInt8}(result.body)
                 compressed = transcode(GzipCompressor, body)
                 bytes = length(body)+length(compressed)+sizeof(key[2])+sizeof(key[3])
-                if bytes <= app.cache_budget
-                    if app.cache_bytes + bytes > app.cache_budget || length(app.cache) >= 512
+                if bytes <= app.cache_budget && app.cache_entries > 0
+                    if app.cache_bytes + bytes > app.cache_budget ||
+                       length(app.cache) >= app.cache_entries
                         empty!(app.cache)
                         app.cache_bytes = 0
                     end
@@ -235,20 +247,12 @@ function handle_request(app::WebApp, req::HTTP.Request)
             return html_response("Internal server error"; status = 500)
         end
     end
-    # External previews have their own DNS, redirect, size and time limits. They
-    # must yield without holding the application database lock.
-    response isa Context && (response = route_unfurl(response))
-    refresh_session_activity!(app, req)
-    publish_events!(app, events)
-    head && (response.body = UInt8[])
-    return security_headers!(response)
 end
 
 function start_server(app::WebApp; host = "127.0.0.1", port = 3001, kwargs...)
-    return HTTP.serve!(
+    return threaded_listen!(
         host,
         port;
-        stream = true,
         verbose = false,
         readtimeout = 60,
         kwargs...,
@@ -278,10 +282,18 @@ function start_server(app::WebApp; host = "127.0.0.1", port = 3001, kwargs...)
             Base.append!(body, chunk)
         end
         req.body = body
-        response = handle_request(app, req)
+        response = request_on_worker(handle_request, app, req)
         HTTP.setstatus(stream, response.status)
         for header in response.headers
             HTTP.appendheader(req.response, header)
+        end
+        # Bodies are already materialized. A known length avoids chunk framing
+        # and its extra socket writes. HEAD and bodyless statuses omit it.
+        if req.method != "HEAD" && response.status >= 200 && response.status ∉ (204, 304)
+            bytes =
+                response.body isa AbstractString ? ncodeunits(response.body) :
+                length(response.body)
+            HTTP.setheader(stream, "Content-Length" => string(bytes))
         end
         HTTP.startwrite(stream)
         write(stream, response.body)

@@ -1,4 +1,4 @@
-using Test, HTTP, JSON3, SQLite
+using Test, HTTP, JSON3, SQLite, Dates
 
 if !isdefined(@__MODULE__, :Campfire)
     include(joinpath(@__DIR__, "../julia/src/Campfire.jl"))
@@ -305,9 +305,13 @@ end
             ) == 0
 
             # The timestamp predicate, rather than IDs, defines the page boundary.
+            page_time = now(UTC) + Hour(1)
             for id = 1:45
                 body = "Page $id"
-                created = "2026-10-12 13:00:$(lpad(id, 2, '0')).000"
+                created = Dates.format(
+                    page_time + Second(id),
+                    dateformat"yyyy-mm-dd HH:MM:SS.sss",
+                )
                 W.execute!(
                     app,
                     "INSERT INTO messages(room_id,creator_id,client_message_id,created_at,updated_at) VALUES(1,1,?,?,?)",

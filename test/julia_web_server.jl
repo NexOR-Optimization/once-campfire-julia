@@ -6,7 +6,13 @@ end
 @testset "Whole server HTTP and room authorization" begin
     W = Campfire.Web
     mktempdir() do directory
-        app = W.WebApp(joinpath(directory, "campfire.sqlite3"); secret = repeat("j", 64))
+        # This suite inspects the single-owner cache; the reader suite exercises
+        # concurrent shards and aggregate limits explicitly.
+        app = W.WebApp(
+            joinpath(directory, "campfire.sqlite3");
+            secret = repeat("j", 64),
+            readers = 0,
+        )
         function request(
             method,
             path;
@@ -375,6 +381,45 @@ end
                 ),
             ).status == 403
             app.origin = ""
+            # Exercise framing over TCP, including compressed bytes, Unicode,
+            # HEAD and a bodyless response on reused HTTP connections.
+            listener = listen(ip"127.0.0.1", 0)
+            port = getsockname(listener)[2]
+            server = W.start_server(app; server = listener)
+            base = "http://127.0.0.1:$port"
+            try
+                headers = ["Cookie" => cookie, "Accept-Encoding" => "gzip"]
+                wire = HTTP.get(base * "/rooms/1", headers; decompress = false)
+                @test parse(Int, HTTP.header(wire, "Content-Length")) == length(wire.body)
+                @test HTTP.header(wire, "Transfer-Encoding") == ""
+                @test HTTP.header(wire, "Content-Encoding") == "gzip"
+                @test occursin(
+                    "Updated HTTPS message",
+                    String(transcode(GzipDecompressor, wire.body)),
+                )
+                head = HTTP.request("HEAD", base * "/rooms/1", headers)
+                @test isempty(head.body)
+                @test HTTP.header(head, "Transfer-Encoding") == ""
+                empty = HTTP.post(
+                    base * "/unfurl_link",
+                    [
+                        "Cookie" => cookie,
+                        "Content-Type" => "application/x-www-form-urlencoded",
+                    ],
+                    "url=http%3A%2F%2F127.0.0.1%2Fprivate",
+                )
+                @test empty.status == 204
+                @test isempty(empty.body)
+                @test HTTP.header(empty, "Content-Length") == ""
+                plain = HTTP.get(
+                    base * "/rooms/1",
+                    ["Cookie" => cookie, "Accept-Encoding" => "identity"],
+                )
+                @test parse(Int, HTTP.header(plain, "Content-Length")) == length(plain.body)
+                @test occursin("👍", String(plain.body))
+            finally
+                close(server)
+            end
             @test request("DELETE", "/session"; cookie).status == 302
             @test request("GET", "/rooms/1"; cookie).status == 302
         finally

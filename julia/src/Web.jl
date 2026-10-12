@@ -68,6 +68,8 @@ struct CachedPage
     headers::Vector{Pair{String,String}}
 end
 
+include("web/Readers.jl")
+
 mutable struct WebApp
     db::SQLite.DB
     observer::SQLite.DB
@@ -79,6 +81,7 @@ mutable struct WebApp
     vapid_public_key::String
     vapid_private_key::String
     lock::ReentrantLock
+    storage_lock::ReentrantLock
     broker::Broker
     jobs::Set{Task}
     closing::Bool
@@ -86,8 +89,10 @@ mutable struct WebApp
     cache::Dict{Tuple{Int64,String,String},CachedPage}
     cache_bytes::Int
     cache_budget::Int
+    cache_entries::Int
     generation::Int64
     origin::String
+    readers::Union{Nothing,ReadPool{WebApp}}
 end
 
 mutable struct Context
@@ -222,8 +227,11 @@ function WebApp(
     secret = get(ENV, "SECRET_KEY_BASE", ""),
     cache_budget = 64 * 1024^2,
     origin = "",
+    readers::Integer = min(Threads.nthreads(:default), 4),
 )
     cache_budget >= 0 || throw(ArgumentError("negative cache budget"))
+    readers >= 0 || throw(ArgumentError("negative reader count"))
+    initialize_media!()
     mkpath(dirname(abspath(path)))
     mkpath(storage_root)
     if isempty(secret)
@@ -242,20 +250,24 @@ function WebApp(
         throw(ArgumentError("SECRET_KEY_BASE must contain at least 32 characters"))
     vapid_public, vapid_private = ensure_vapid_keys!(storage_root)
     db = SQLite.DB(path)
+    observer = nothing
+    observer_statement = nothing
     try
         initialize_schema!(db)
         observer = SQLite.DB(path)
         execute_db!(observer, "PRAGMA query_only=ON")
-        return WebApp(
+        observer_statement = SQLite.Stmt(observer, "PRAGMA data_version")
+        app = WebApp(
             db,
             observer,
-            SQLite.Stmt(observer, "PRAGMA data_version"),
+            observer_statement,
             Dict{String,SQLite.Stmt}(),
             abspath(storage_root),
             secret,
             Dict{String,Vector{UInt8}}(),
             vapid_public,
             vapid_private,
+            ReentrantLock(),
             ReentrantLock(),
             Broker(),
             Set{Task}(),
@@ -264,16 +276,28 @@ function WebApp(
             Dict{Tuple{Int64,String,String},CachedPage}(),
             0,
             cache_budget,
+            512,
             -1,
             origin,
+            nothing,
         )
+        # One worker gains no concurrency from extra database handles. Callers
+        # can still request a pool explicitly for deterministic ownership tests.
+        if readers > 1 && path != ":memory:"
+            app.readers = open_readers(app, path, readers)
+        end
+        return app
     catch
+        observer_statement === nothing || DBInterface.close!(observer_statement)
+        observer === nothing || SQLite.close(observer)
         SQLite.close(db)
         rethrow()
     end
 end
 
 function Base.close(app::WebApp)
+    # Drain leases before shutting down the writer used by deferred activity.
+    app.readers === nothing || close(app.readers)
     clients = lock(app.lock) do
         app.closing = true
         return collect(values(app.broker.clients))
@@ -287,10 +311,7 @@ function Base.close(app::WebApp)
     end
     foreach(wait, jobs)
     lock(app.lock) do
-        foreach(DBInterface.close!, values(app.statements))
-        DBInterface.close!(app.observer_statement)
-        SQLite.close(app.db)
-        return SQLite.close(app.observer)
+        return close_database!(app)
     end
     return nothing
 end
@@ -469,6 +490,7 @@ include("web/Unfurl.jl")
 include("web/Push.jl")
 include("web/Rooms.jl")
 include("web/Cable.jl")
+include("web/Transport.jl")
 include("web/Server.jl")
 
 end

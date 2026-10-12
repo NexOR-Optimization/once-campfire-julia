@@ -114,7 +114,7 @@ module CampfireComparisonAdapter
         config.merge!(JSON.parse(ENV.fetch("#{env_name.(app)}_BENCH_ENV", "{}")))
       RUBY
       ['when "go" then {processes: 1, cable: "native websocket", jobs: "in-process"}',
-       'when "julia" then {processes: 1, threads: config.fetch("JULIA_NUM_THREADS"), database: "one serialized connection", cable: "native Action Cable", jobs: "in-process", gc: "enabled"}' + "\n      " +
+       'when "julia" then {processes: 1, threads: config.fetch("JULIA_NUM_THREADS"), database: "one writer; up to four exclusive query-only readers", http: "interactive I/O; worker application tasks", cache: "64 MiB total across reader shards", cable: "native Action Cable", jobs: "in-process", gc: "enabled"}' + "\n      " +
        'when "go" then {processes: 1, cable: "native websocket", jobs: "in-process"}'],
       ["run(*command)\n      client = BenchmarkHTTPClient.new(base)", "run(*command)\n      server_cgroup = CampfireComparisonAdapter.container_cgroup(container)\n      client = BenchmarkHTTPClient.new(base)"],
       ['"--conc", "4", "--duration", "2")', '"--conc", "4", "--duration", options[:warmup].to_s)'],
