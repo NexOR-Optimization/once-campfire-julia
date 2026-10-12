@@ -87,6 +87,7 @@ Each Julia test file runs independently in the test environment:
 
 ```sh
 julia --project=test -e 'using Pkg; Pkg.instantiate()'
+julia --project=test test/julia_web_sqlite.jl
 julia --project=test test/julia_web_auth.jl
 julia --project=test test/julia_web_messages.jl
 julia --project=test test/julia_web_views.jl
@@ -122,7 +123,90 @@ The browser flow and HTTP contracts complement the focused tests; neither proves
 complete production equivalence to every Rails behavior. The comparison adapter
 below adds Julia to the shared harness without editing its checkout.
 
-## Optimized full-server comparison, 2026-10-12
+## Inference fixes and full-server comparison, 2026-10-12
+
+Removing boxed request variables, typing queued event payloads, and specializing
+fixed-schema SQLite operations reduced Julia heap allocation in the warmed
+cached handler from 7,968 to 2,544 bytes/request (68%). Full-server throughput
+improved modestly, by 1.9–3.0% in the normal workload. Median requests/second
+over three runs, compared with the preceding parallel-server measurements:
+
+| Workload | Julia before | Julia after | Change | p99 before → after, ms |
+|---|---:|---:|---:|---:|
+| Room page | 57,225 | 58,364 | +2.0% | 0.727 → 0.589 |
+| Messages page | 58,518 | 59,947 | +2.4% | 0.703 → 0.603 |
+| Sidebar | 60,748 | 61,889 | +1.9% | 0.701 → 0.616 |
+| Search | 59,651 | 60,840 | +2.0% | 0.722 → 0.616 |
+| Post a message | 2,700 | 2,780 | +3.0% | 18.783 → 18.079 |
+
+With the additional writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page | 53,717 | 54,876 | 1.432 → 1.006 |
+| Messages page | 55,748 | 57,282 | 1.309 → 0.974 |
+| Sidebar | 60,147 | 60,928 | 0.910 → 0.819 |
+| Search | 57,735 | 59,289 | 1.241 → 0.909 |
+
+Only the Julia candidate was rerun. Earlier Julia, Rust and C measurements are
+historical references; these short three-run comparisons do not establish
+statistical significance. The latency values are medians of per-run p99s.
+Fixture, verification revision, load-generator binary, CPU affinity, four-worker
+allocation, gzip, five-second warmup, eight-second measurement and 16-client
+concurrency match the previous comparison. Builds and tests stopped before
+timing. GC stays enabled and the shared response-cache budget remains 64 MiB.
+
+Reads still use approximately 380% CPU. Normal-profile container lifetime peak
+memory was effectively unchanged, 1,464.3 → 1,463.2 MiB; the mixed-profile peak
+was 1,338.0 → 1,353.6 MiB. These cgroup figures include page cache and warmup.
+Lower allocation per request has not translated into lower peak container
+memory, and most of the C/Rust throughput gap remains.
+
+### Allocation and inference checks
+
+| Warmed operation | Julia heap bytes before → after | Allocations before → after |
+|---|---:|---:|
+| Cached `handle_request` | 7,968 → 2,544 | 171 → 45 |
+| Current session and membership query | 2,160 → 0 | 57 → 0 |
+| Database generation check | 928 → 0 | 20 → 0 |
+| BEGIN plus COMMIT | 1,344 → 0 | 26 → 0 |
+
+These measurements reuse a request in process and exclude socket parsing,
+transport task creation, and native SQLite/OpenSSL allocation. The SQLite text
+binder uses `SQLITE_TRANSIENT`, which copies text in native memory. Session and
+membership checks still read current database state on every cache hit.
+The fixed-schema helper retains SQLite.jl's statement ownership, resets and
+clears bindings on success and failure, and avoids constructing query metadata.
+It accesses SQLite.jl 1.8.3 internals; rerun `test/julia_web_sqlite.jl` when
+upgrading SQLite.jl. Generic writes retain SQLite.jl's parameter binding.
+
+Compiler IR confirms that `handle_request` no longer captures `Core.Box`
+variables. `cache_generation!` now infers `Int64` and has no JET reports.
+Authorization returns a concrete small union, and event payloads use a finite
+union with branch-specific types. Actual JuliaC `--trim=safe` checks no longer
+report the targeted handler, generation or event-payload failures. The complete
+handler still fails safe trimming because of dynamic rows, rendering, request
+input and dependency code. Logging-only diagnostics were set aside; no unsafe
+trimming or verifier bypass was used. Better inference exposes more of the
+call graph, so raw diagnostic totals are not a measure of progress.
+
+All 394 assertions in the four changed test files passed, including binding
+lifetime, error recovery, live authorization, reader ownership, method overrides
+and WebSockets. The unchanged Chromium smoke test passed. All 54 primary load
+invocations and 24 nested writer samples had zero errors and invalid responses:
+18,423,158 validated responses including warmups, 11,433,013 timed responses,
+and 102,879 acknowledged writes reconciled against exact SQLite/FTS records.
+Every timed paced-writer sample acknowledged 80 posts at 9.9 posts/second.
+
+The candidate image is
+`sha256:6fa3ca9b2595b531e31508000334dba21ad16315f19aae0dd157c5e8066d9277`,
+built from the working tree based on `366ffe0`; its runtime source digest is
+`f7da644e1a33fb51d8bb1fe8da20dbe035dd1d682e76ec2206af6e97f44ef73e`.
+Raw samples, exact write receipts with hashes, inference/allocation reports,
+test logs and comparison analysis are retained under
+`tmp/julia-full-server/2026-10-12-inference-fixed/` (ignored by Git).
+
+## Earlier parallel-server comparison, 2026-10-12
 
 Read throughput doubled after moving application work to worker threads, adding
 exclusive SQLite readers, and sending known response lengths to avoid extra

@@ -105,12 +105,16 @@ function handle_request(app::WebApp, req::HTTP.Request)
         @debug "Invalid request parameters" exception=error
         return html_response("Invalid request"; status = 400)
     end
-    method = uppercase(req.method)
-    head = method == "HEAD"
-    head && (method = "GET")
-    if method == "POST" && haskey(parameters, "_method")
-        override = uppercase(string(parameters["_method"]))
-        override in ("PATCH", "PUT", "DELETE") && (method=override)
+    original_method = uppercase(req.method)
+    head = original_method == "HEAD"
+    # Assign once so the reader callback captures a String, not a Core.Box.
+    method = if head
+        "GET"
+    elseif original_method == "POST" && haskey(parameters, "_method")
+        override = uppercase(string(parameters["_method"])::String)
+        override in ("PATCH", "PUT", "DELETE") ? override : original_method
+    else
+        original_method
     end
     if method == "GET"
         response = asset_response(path)
@@ -133,12 +137,13 @@ function handle_request(app::WebApp, req::HTTP.Request)
     events = Event[]
     response = if cache_route(method, path)
         with_reader(app) do reader
-            result = request_response(reader, req, parameters, path, method, events)
+            reader_response =
+                request_response(reader, req, parameters, path, method, events)
             # Finish writer effects before returning the lease, so pool shutdown
             # cannot close the writer while an in-flight read still needs it.
             refresh_session_activity!(app, req)
             publish_events!(app, events)
-            return result
+            return reader_response
         end
     else
         result = request_response(app, req, parameters, path, method, events)

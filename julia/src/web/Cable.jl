@@ -177,20 +177,35 @@ function publish_events!(app, events)
         app.closing && return
         for event in events
             if event.kind == :webhook
-                launch_job!(() -> deliver_webhook!(app, event.id, event.payload), app)
+                launch_job!(
+                    () ->
+                        deliver_webhook!(app, event.id, event.payload::WebhookEventPayload),
+                    app,
+                )
             elseif event.kind == :push
-                launch_job!(() -> deliver_message_push!(app, event.id, event.payload), app)
+                launch_job!(
+                    () -> deliver_message_push!(app, event.id, event.payload::String),
+                    app,
+                )
             elseif event.kind == :push_test
-                launch_job!(() -> deliver_test_push!(app, event.id, event.payload), app)
+                launch_job!(
+                    () -> deliver_test_push!(app, event.id, event.payload::String),
+                    app,
+                )
             elseif event.kind == :purge_storage
-                launch_job!(() -> purge_storage!(app, event.payload), app)
+                launch_job!(() -> purge_storage!(app, event.payload::Vector{String}), app)
             elseif event.kind == :room
-                deliver_channel!(app, "RoomMessagesChannel", event.payload; room = event.id)
+                deliver_channel!(
+                    app,
+                    "RoomMessagesChannel",
+                    event.payload::String;
+                    room = event.id,
+                )
             elseif event.kind == :unread
                 deliver_channel!(
                     app,
                     "UnreadRoomsChannel",
-                    event.payload;
+                    event.payload::UnreadEventPayload;
                     room = event.id,
                     unread = true,
                 )

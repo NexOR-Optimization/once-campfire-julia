@@ -86,7 +86,12 @@ end
                 cookie,
                 params = Dict("url"=>"http://127.0.0.1/private"),
             ).status == 204
-            @test request("HEAD", "/rooms/1"; cookie).body == UInt8[]
+            head = request("HEAD", "/rooms/1"; cookie)
+            @test head.status == 200
+            @test head.body == UInt8[]
+            @test HTTP.header(head, "X-Content-Type-Options") == "nosniff"
+            @test !isempty(request("GET", "/rooms/1"; cookie).body)
+            @test isempty(request("HEAD", "/up").body)
             @test request("GET", "/users/me/sidebar"; cookie).status == 200
             @test request("GET", "/users/me/profile"; cookie).status == 200
             changed = W.handle_request(
@@ -153,6 +158,32 @@ end
                 params = Dict("room[name]"=>"Renamed"),
             ).status == 303
             @test W.scalar(app, "SELECT name FROM rooms WHERE id=2") == "Renamed"
+            # HTML forms override only POST and only the supported write verbs.
+            for override in ("patch", "PuT")
+                renamed = "Renamed by $override"
+                @test request(
+                    "post",
+                    "/rooms/opens/2";
+                    cookie,
+                    params = Dict("_method"=>override, "room[name]"=>renamed),
+                ).status == 303
+                @test W.scalar(app, "SELECT name FROM rooms WHERE id=2") == renamed
+            end
+            for override in ("GET", "HEAD", "OPTIONS", "invalid")
+                @test request(
+                    "POST",
+                    "/rooms/opens/2";
+                    cookie,
+                    params = Dict("_method"=>override, "room[name]"=>"Forbidden"),
+                ).status == 405
+            end
+            @test request(
+                "GET",
+                "/rooms/opens/2";
+                cookie,
+                params = Dict("_method"=>"DELETE"),
+            ).status == 302
+            @test W.scalar(app, "SELECT name FROM rooms WHERE id=2") == "Renamed by PuT"
             @test request(
                 "POST",
                 "/rooms/2/messages";
@@ -344,7 +375,8 @@ end
                 "INSERT INTO messages(id,room_id,creator_id,client_message_id,created_at,updated_at) VALUES(101,2,9999,'orphan','2026','2026')",
             )
             W.execute!(app, "PRAGMA foreign_keys=ON")
-            @test request("DELETE", "/rooms/2"; cookie).status == 303
+            @test request("POST", "/rooms/2"; cookie, params = Dict("_method"=>"delete")).status ==
+                  303
             @test W.scalar(app, "SELECT count(*) FROM message_search_index") == 0
             @test request("GET", "/rooms/2"; cookie).status == 404
             bot_created = request(

@@ -34,10 +34,15 @@ struct UploadedFile
     data::Vector{UInt8}
 end
 
+const UnreadEventPayload = NamedTuple{(:roomId, :at),Tuple{Int64,Float64}}
+const WebhookEventPayload = NamedTuple{(:message_id, :base_url),Tuple{Int64,String}}
+const EventPayload =
+    Union{Nothing,String,Vector{String},UnreadEventPayload,WebhookEventPayload}
+
 struct Event
     kind::Symbol
     id::Int64
-    payload::Any
+    payload::EventPayload
 end
 
 struct Subscription
@@ -117,15 +122,67 @@ function allparams(ctx, key)
     return value isa AbstractVector ? value : [value]
 end
 
-function withquery(f::F, app::WebApp, sql::AbstractString, parameters = ()) where {F}
-    statement = get!(app.statements, String(sql)) do
+function prepared_statement(app::WebApp, sql::AbstractString)
+    return get!(app.statements, String(sql)) do
         return SQLite.Stmt(app.db, sql)
     end
-    rows = DBInterface.execute(statement, parameters)
+end
+
+function withquery(f::F, app::WebApp, sql::AbstractString, parameters = ()) where {F}
+    statement = prepared_statement(app, sql)
+    # strict=false selects this concrete query type, independently of SQL schema.
+    rows = DBInterface.execute(statement, parameters)::SQLite.Query{false}
     try
         return f(rows)
     finally
         DBInterface.close!(rows)
+    end
+end
+
+# SQLite.Stmt owns/finalizes the handle. Its wrapper is abstractly declared in
+# SQLite.jl; narrow its concrete RefValue without caching a pointer past close().
+function statement_handle(statement::SQLite.Stmt)
+    wrapper = statement.stmt_wrapper::Base.RefValue{SQLite.StmtHandle}
+    handle = wrapper[]
+    handle == C_NULL && throw(SQLite.SQLiteException("Statement is closed"))
+    return handle
+end
+
+# Fixed-schema reads and parameterless commands do not need Query metadata.
+# These statements share the same lock/reader lease as ordinary DBInterface use.
+# Text bindings are copied by SQLite, so no borrowed Julia buffer outlives a call.
+function with_statement(
+    f::F,
+    statement::SQLite.Stmt,
+    parameters::Tuple{Vararg{AbstractString}} = (),
+) where {F}
+    handle = statement_handle(statement)
+    GC.@preserve statement begin
+        SQLite.C.sqlite3_reset(handle)
+        try
+            length(parameters) == SQLite.C.sqlite3_bind_parameter_count(handle) ||
+                throw(SQLite.SQLiteException("values required for every SQL placeholder"))
+            for index in eachindex(parameters)
+                value = parameters[index]
+                # Other AbstractStrings may use a different code-unit encoding.
+                value isa Union{String,SubString{String}} || (value = String(value))
+                status = SQLite.C.sqlite3_bind_text(
+                    handle,
+                    index,
+                    value,
+                    ncodeunits(value),
+                    SQLite.C.SQLITE_TRANSIENT,
+                )
+                status == SQLite.C.SQLITE_OK || throw(SQLite.sqliteexception(statement.db))
+            end
+            status = SQLite.C.sqlite3_step(handle)
+            status in (SQLite.C.SQLITE_ROW, SQLite.C.SQLITE_DONE) ||
+                throw(SQLite.sqliteexception(statement.db))
+            return f(handle, status)
+        finally
+            SQLite.C.sqlite3_reset(handle)
+            SQLite.C.sqlite3_clear_bindings(handle)
+        end
     end
 end
 
@@ -150,7 +207,20 @@ function scalar(app, sql, parameters = (); default = nothing)
         return default
     end
 end
-execute!(app::WebApp, sql, parameters = ()) = withquery(_ -> nothing, app, sql, parameters)
+function execute!(app::WebApp, sql, parameters = ())
+    statement = prepared_statement(app, sql)
+    if isempty(parameters)
+        return with_statement((_, _) -> nothing, statement)
+    end
+    # Retain SQLite.jl's generic parameter binding, including blobs and NULLs,
+    # while avoiding column names/types/dictionaries for discarded results.
+    try
+        SQLite.execute(statement, parameters)
+    finally
+        SQLite.C.sqlite3_reset(statement_handle(statement))
+    end
+    return nothing
+end
 
 function execute_db!(db, sql, parameters = ())
     statement = SQLite.Stmt(db, sql)
@@ -466,13 +536,10 @@ function current_context(app, req, parameters, path, method)
 end
 
 function cache_generation!(app)
-    statement = app.observer_statement
-    rows = DBInterface.execute(statement)
-    version = try
-        row = first(rows)
-        Int64(row[1])
-    finally
-        DBInterface.close!(rows)
+    version = with_statement(app.observer_statement) do handle, status
+        status == SQLite.C.SQLITE_ROW ||
+            throw(SQLite.SQLiteException("Missing database generation"))
+        return SQLite.C.sqlite3_column_int64(handle, 0)
     end
     if version != app.generation
         empty!(app.cache)

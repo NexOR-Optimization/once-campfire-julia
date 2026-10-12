@@ -3,6 +3,45 @@ if !isdefined(@__MODULE__, :Campfire)
     include(joinpath(@__DIR__, "../julia/src/Campfire.jl"))
 end
 
+@testset "Queued event payloads" begin
+    W = Campfire.Web
+    mktempdir() do directory
+        app = W.WebApp(joinpath(directory, "db.sqlite3"); secret = repeat("e", 64))
+        try
+            key = repeat("a", 32)
+            path = W.blob_path(app, key)
+            mkpath(dirname(path))
+            write(path, "detached attachment")
+            # Missing destinations are legitimate after a concurrent deletion.
+            # Background delivery must retain each event's ID and payload when
+            # the loop proceeds to a different event before its job starts.
+            events = W.Event[
+                W.Event(:webhook, 11, (message_id = Int64(12), base_url = "http://test")),
+                W.Event(:push, 13, "http://test"),
+                W.Event(:push_test, 14, "http://test"),
+                W.Event(:purge_storage, 0, [key]),
+                W.Event(:room, 15, "<turbo-stream></turbo-stream>"),
+                W.Event(:unread, 15, (roomId = Int64(15), at = 1.25)),
+                W.Event(:sidebar, 0, nothing),
+                W.Event(:disconnect, 16, nothing),
+                W.Event(:revoke_room, 15, nothing),
+            ]
+            @test_logs begin
+                jobs = lock(app.lock) do
+                    W.publish_events!(app, events)
+                    return collect(app.jobs)
+                end
+                @test length(jobs) == 4
+                foreach(wait, jobs)
+            end
+            @test !isfile(path)
+            @test isempty(app.jobs)
+        finally
+            close(app)
+        end
+    end
+end
+
 @testset "Action Cable transport and live authorization" begin
     W = Campfire.Web
     mktempdir() do directory
@@ -186,6 +225,9 @@ end
                     ),
                     app.lock,
                 ) == 1
+                unread_id = subscribe(socket, "UnreadRoomsChannel")
+                @test next_message(incoming; type = "confirm_subscription").identifier ==
+                      unread_id
                 post = HTTP.post(
                     origin*"/rooms/1/messages",
                     [
@@ -200,6 +242,10 @@ end
                 @test broadcast.identifier == room_id
                 @test occursin("Live Julia", broadcast.message)
                 @test occursin("action=\"append\"", broadcast.message)
+                unread = next_message(incoming)
+                @test unread.identifier == unread_id
+                @test unread.message.roomId == 1
+                @test unread.message.at > 0
                 sidebar_id = subscribe(
                     socket,
                     "Turbo::StreamsChannel";

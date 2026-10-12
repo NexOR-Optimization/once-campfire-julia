@@ -290,32 +290,31 @@ function cached_identity(app, token, room_id::Union{Nothing,AbstractString} = no
     # fields keep this hot path concrete without copying a dynamic SQL row.
     sql, parameters = if room_id === nothing
         (
-            """SELECT u.id,s.id,
-datetime(s.last_active_at)<=datetime('now','-1 hour'),1
+            """SELECT u.id AS user_id,s.id AS session_id,
+COALESCE(datetime(s.last_active_at)<=datetime('now','-1 hour'),0) AS refresh_due,
+1 AS room_access
 FROM users u JOIN sessions s ON s.user_id=u.id
 WHERE s.token=? AND u.status=0 AND u.role!=2""",
             (token,),
         )
     else
         (
-            """SELECT u.id,s.id,
-datetime(s.last_active_at)<=datetime('now','-1 hour'),
-EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.room_id=?)
+            """SELECT u.id AS user_id,s.id AS session_id,
+COALESCE(datetime(s.last_active_at)<=datetime('now','-1 hour'),0) AS refresh_due,
+EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.room_id=?) AS room_access
 FROM users u JOIN sessions s ON s.user_id=u.id
 WHERE s.token=? AND u.status=0 AND u.role!=2""",
             (room_id, token),
         )
     end
-    return withquery(app, sql, parameters) do rows
-        for row in rows
-            return (
-                id = Int64(row[1])::Int64,
-                session_id = Int64(row[2])::Int64,
-                refresh_due = Bool(coalesce(row[3], 0))::Bool,
-                room_access = Bool(row[4])::Bool,
-            )
-        end
-        return nothing
+    return with_statement(prepared_statement(app, sql), parameters) do handle, status
+        status == SQLite.C.SQLITE_DONE && return nothing
+        return (
+            id = SQLite.C.sqlite3_column_int64(handle, 0),
+            session_id = SQLite.C.sqlite3_column_int64(handle, 1),
+            refresh_due = SQLite.C.sqlite3_column_int64(handle, 2) != 0,
+            room_access = SQLite.C.sqlite3_column_int64(handle, 3) != 0,
+        )
     end
 end
 

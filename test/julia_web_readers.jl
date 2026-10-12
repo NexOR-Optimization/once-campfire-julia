@@ -57,6 +57,14 @@ end
             @test all(r -> r.storage_lock === app.storage_lock, pool.readers)
             for reader in pool.readers
                 @test W.scalar(reader, "PRAGMA query_only") == 1
+                @test (@inferred W.cache_generation!(reader)) isa Int64
+                identity = @inferred Union{Nothing} W.cached_identity(
+                    reader,
+                    "reader-1",
+                    SubString("room=1", 6),
+                )
+                @test identity.id == 1
+                @test identity.room_access
                 @test_throws SQLite.SQLiteException W.execute!(reader, "DELETE FROM users")
                 @test direct(reader).status == 200
                 @test !isempty(reader.cache)
