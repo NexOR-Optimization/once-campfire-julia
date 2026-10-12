@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+campfire_bin=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec julia --startup-file=no --history-file=no --project="$campfire_bin/.." \
+  "$campfire_bin/../server.jl" "$@"
