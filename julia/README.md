@@ -99,10 +99,128 @@ the verification checkout was `ec02debb3e44f40b8778a6a42db3c4515b2f9eaf`.
 contracts and write auditor against a disposable fixture copy. Raw receipts stay
 outside source control.
 
-These are functional conformance results, not a controlled C/Rust throughput
-comparison. The shared harness's application list does not yet include Julia.
-Its browser flow and HTTP contracts complement the focused tests; neither proves
-complete production equivalence to every Rails behavior.
+The browser flow and HTTP contracts complement the focused tests; neither proves
+complete production equivalence to every Rails behavior. The comparison adapter
+below adds Julia to the shared harness without editing its checkout.
+
+## Full-server comparison, 2026-10-12
+
+The current Julia server is slower than the C and Rust implementations on this
+workload. These measurements include real HTTP, authentication, SQLite, gzip,
+and message persistence, using the same shared fixture and response contracts.
+Each cell shows median requests/second followed by the three-run minimum–maximum.
+
+| Workload | Julia | Rust | C |
+|---|---:|---:|---:|
+| Room page | 27,848 (27,691–28,046) | 76,894 (75,516–77,352) | 108,868 (101,449–109,919) |
+| Messages page | 27,902 (27,791–28,206) | 73,102 (72,981–74,166) | 112,285 (111,338–121,821) |
+| Sidebar | 30,276 (30,018–30,299) | 87,414 (87,086–88,835) | 116,207 (114,772–121,438) |
+| Search | 29,452 (29,441–29,869) | 87,199 (87,160–87,634) | 112,151 (111,539–117,793) |
+| Post a message | 2,627 (2,607–2,668) | 5,922 (5,914–5,945) | 4,884 (4,808–4,908) |
+
+With one additional writer capped at ten posts/second to a separate room,
+median read throughput was:
+
+| Workload | Julia | Rust | C |
+|---|---:|---:|---:|
+| Room page | 26,469 | 71,822 | 95,445 |
+| Messages page | 26,652 | 69,745 | 101,973 |
+| Sidebar | 29,544 | 87,378 | 114,572 |
+| Search | 28,709 | 86,899 | 110,730 |
+
+Every timed writer sample acknowledged 80 posts and reported 9.9 posts/second.
+This profile exercises cross-room cache invalidation. It does not measure
+WebSocket fanout or a room with many actively posting users.
+
+The following latency values are medians of the three per-run p99s, in
+milliseconds; they are not pooled percentiles:
+
+| Workload/profile | Julia | Rust | C |
+|---|---:|---:|---:|
+| Room page, normal | 0.617 | 0.395 | 0.314 |
+| Post a message, normal | 13.047 | 4.147 | 4.391 |
+| Room page, with paced writer | 3.069 | 0.424 | 0.364 |
+
+Julia used approximately one CPU core despite having four available. C and Rust
+used most of their four-core allocation. Julia's request path currently
+serializes database work through one connection and one application lock; cache
+miss rendering also holds that lock. The observed CPU use and larger latency
+increase under writes make concurrent request handling, database ownership and
+cache-miss work the next profiling targets. These results do not isolate GC cost.
+GC was enabled throughout.
+
+Maximum observed container memory peaks during the normal profile were
+576.7 MiB for Julia, 167.8 MiB for Rust and 84.3 MiB for C. These are cgroup
+lifetime peaks including page cache, not Julia heap allocations or process RSS.
+No aggregate load-generator CPU saturation was observed: its maximum was about
+103%, with 400% available across four allocated cores.
+
+### Method and provenance
+
+Intel Core i7-12700K, 32 GB RAM, Linux 7.2.5; existing `powersave` governor.
+Servers ran sequentially in Docker with host networking on CPUs `0,2,4,6`:
+four distinct performance cores. The load generator used four other performance
+cores, `8,10,12,14`, with no shared SMT siblings. Each profile used three rotating
+rounds, five seconds of warmup at four clients, eight seconds of measurement at
+16 clients, gzip, and fresh fixture copies per application/round. Builds and
+tests had stopped before timing. Database and attachment copies were on `/tmp`
+tmpfs for every implementation; this is not an SSD throughput measurement.
+
+| Implementation | Source revision | Production configuration |
+|---|---|---|
+| Julia | `f5853f0ab77490602d36fcc4e7e30052f5a0f1be` | Julia 1.13.1; `JULIA_NUM_THREADS=4`; one process/DB connection; 64 MiB response cache |
+| Rust | `6838ead05391bd287a3b0bdd14904d0a5b44ad8a` | Official Rust 1.98.1 image; release LTO; five DB readers; three job workers; 64 MiB response and 32 MiB fragment caches |
+| C | `873a51f523de5a0cc235884e5725cfb5521d2027` | Clang 22.1.8, `-O3 -flto`; four HTTP loops/readers; two job workers; 64 MiB response cache |
+
+The verification revision and pinned Rails fixture are the ones listed above.
+All eight preflight contracts passed for each image. The normal and mixed
+profiles together validated 62,768,504 responses, including 42,169,371 timed
+responses, and audited 504,448 exact persisted writes. All 162 warmup/timed
+samples had zero errors and zero invalid responses. SQLite/FTS write audits
+reconciled every acknowledgment. Julia's mixed warmups posted fewer messages
+while compiling; its timed writer samples all reached the requested cap.
+
+This compares production implementations, whose HTML and runtime topology
+differ. For example, the decoded room page was 216,645 bytes for Julia,
+416,121 for Rust and 412,696 for C; compressed sizes were approximately
+14.2, 24.2 and 21.3 kB respectively. All passed the same content contract.
+The C benchmark image follows its committed image recipe and omits external
+media transformation executables; the fixture's existing processed avatar
+passed validation. Fresh media transformations are outside these timed routes.
+
+Raw summaries, per-sample metrics, machine/build metadata and hashed write
+receipts are retained locally under the ignored
+`tmp/julia-full-server/2026-10-12/` directory at the repository root.
+
+### Reproduce
+
+Build each production image and the shared release load generator first. Put
+the C and Rust checkouts under `WORKSPACE/once-campfire-c` and
+`WORKSPACE/once-campfire-rust`. Generate `FIXTURE` with the shared `bin/seed`.
+The adapter uses this checkout for Julia; `JULIA_SOURCE` overrides that path.
+
+```sh
+export JULIA_IMAGE=campfire-julia:local
+export C_IMAGE=campfire-c:local
+export RUST_IMAGE=campfire-rust:bench-6838ead
+export BENCH_ENV_FILE="$FIXTURE/reference.env"
+export JULIA_BENCH_ENV='{"JULIA_NUM_THREADS":"4"}'
+
+ruby julia/bench/compare.rb "$VERIFICATION" \
+  --apps julia,c,rust --workspace "$WORKSPACE" --seed "$FIXTURE" \
+  --cpus 0,2,4,6 --client-cpus 8,10,12,14 --rounds 3 \
+  --warmup 5 --duration 8 --concurrencies 16 \
+  --routes room_show,messages_page,sidebar,search,post_message \
+  --output tmp/julia-full-server/normal --keep_runtime
+```
+
+For the mixed profile, use the four read routes, add `--mixed-write-rate 10`,
+and choose a new output directory. Adjust CPU lists to the actual physical-core
+topology of your machine. The adapter retains the unchanged upstream load
+generator, contracts and write auditor. Its narrow registration/configuration
+changes reject unexpected source layouts and record the original, adapted and
+adapter source hashes. It also records immutable image IDs, Julia runtime source
+hashes, and best-effort cgroup CPU/memory counters outside request timing.
 
 ## Earlier performance prototype
 
