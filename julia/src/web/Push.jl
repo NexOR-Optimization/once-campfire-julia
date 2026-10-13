@@ -477,13 +477,34 @@ function deliver_push_subscription!(app, subscription, payload; sender = send_we
     return status
 end
 
-function message_push_deliveries(app, message_id, base_url)
-    return lock(app.lock) do
-        # Select current recipients before loading a body or preparing a payload.
-        # No presentation, account, avatar, boost or attachment data is needed.
-        subscriptions = qrows(
-            app,
-            """
+const PushSubscription = @NamedTuple{
+    id::Int64,
+    auth_key::Union{Missing,String},
+    created_at::String,
+    endpoint::Union{Missing,String},
+    p256dh_key::Union{Missing,String},
+    updated_at::String,
+    user_agent::Union{Missing,String},
+    user_id::Int64,
+    involvement::String,
+    delivery_room_id::Int64,
+    delivery_creator_id::Int64,
+}
+
+const PushMessage = @NamedTuple{
+    creator_id::Int64,
+    room_id::Int64,
+    author::String,
+    room_name::Union{Missing,String},
+    room_type::String,
+    editable_body::String,
+    plain_text::String,
+}
+
+function message_push_subscriptions(app, message_id)
+    return withquery(
+        app,
+        """
 SELECT p.*, mm.involvement, msg.room_id AS delivery_room_id,
   msg.creator_id AS delivery_creator_id FROM messages msg
 JOIN users author ON author.id=msg.creator_id AND author.status=0
@@ -493,15 +514,32 @@ JOIN push_subscriptions p ON p.user_id=recipient.id
 WHERE msg.id=? AND recipient.status=0 AND recipient.id<>msg.creator_id
   AND mm.connections=0 AND mm.involvement IN ('everything','mentions')
 """,
-            (message_id,),
-        )
-        isempty(subscriptions) && return Tuple{NamedTuple,String}[]
-        # Read fresh message text and author/room labels at delivery time. The
-        # stored rich text is used only to verify mention identities; the push
-        # body uses the plain-text search value, never rendered HTML.
-        message = qone(
-            app,
-            """
+        (message_id,),
+    ) do rows
+        # The fixed projection avoids rebuilding a heterogeneous tuple for each
+        # row, while SQLite.jl still copies strings before the statement resets.
+        return [
+            PushSubscription((
+                row.id,
+                row.auth_key,
+                row.created_at,
+                row.endpoint,
+                row.p256dh_key,
+                row.updated_at,
+                row.user_agent,
+                row.user_id,
+                row.involvement,
+                row.delivery_room_id,
+                row.delivery_creator_id,
+            )) for row in rows
+        ]
+    end
+end
+
+function message_push_message(app, message_id, room_id, creator_id)
+    return withquery(
+        app,
+        """
 SELECT m.creator_id,m.room_id,u.name AS author,r.name AS room_name,r.type AS room_type,
   COALESCE(rt.body,'') AS editable_body,COALESCE(idx.body,'') AS plain_text
 FROM messages m JOIN users u ON u.id=m.creator_id AND u.status=0
@@ -511,13 +549,39 @@ LEFT JOIN action_text_rich_texts rt ON rt.record_type='Message'
 LEFT JOIN message_search_index idx ON idx.rowid=m.id
 WHERE m.id=? AND m.room_id=? AND m.creator_id=?
 """,
+        (message_id, room_id, creator_id),
+    ) do rows
+        for row in rows
+            return PushMessage((
+                row.creator_id,
+                row.room_id,
+                row.author,
+                row.room_name,
+                row.room_type,
+                row.editable_body,
+                row.plain_text,
+            ))
+        end
+        return nothing
+    end
+end
+
+function message_push_deliveries(app, message_id, base_url)
+    return lock(app.lock) do
+        # Select current recipients before loading a body or preparing a payload.
+        # No presentation, account, avatar, boost or attachment data is needed.
+        subscriptions = message_push_subscriptions(app, message_id)
+        isempty(subscriptions) && return Tuple{NamedTuple,String}[]
+        # Read fresh message text and author/room labels at delivery time. The
+        # stored rich text is used only to verify mention identities; the push
+        # body uses the plain-text search value, never rendered HTML.
+        message = message_push_message(
+            app,
+            message_id,
             # An external SQL writer can move a message between these reads.
             # Never pair its new room or author with the old recipient list.
-            (
-                message_id,
-                first(subscriptions).delivery_room_id,
-                first(subscriptions).delivery_creator_id,
-            ),
+            first(subscriptions).delivery_room_id,
+            first(subscriptions).delivery_creator_id,
         )
         message === nothing && return Tuple{NamedTuple,String}[]
         if any(subscription -> subscription.involvement == "mentions", subscriptions)

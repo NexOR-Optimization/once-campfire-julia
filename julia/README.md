@@ -179,6 +179,97 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Typed push rows, 2026-10-13
+
+Typed row conversion increased posting throughput from 4,014 to 4,506 req/s
+(+12.3%) against the preceding message-creation build. SQLite `FULL`, GC, the
+fixture, cache budget and benchmark settings remain unchanged. Medians over
+three normal runs:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page | 81,100 | 81,853 | 0.651 → 0.644 |
+| Messages page | 84,829 | 85,950 | 0.607 → 0.579 |
+| Sidebar | 90,117 | 90,456 | 0.481 → 0.467 |
+| Search | 87,081 | 88,277 | 0.562 → 0.534 |
+| Post a message | 4,014 | 4,506 | 11.583 → 10.671 |
+
+Posting samples ranged from 4,382 to 4,522 req/s. Normal read medians increased
+by 0.4–1.4%; three short sequential runs do not establish statistical
+significance. The posting gain depends on this fixture's subscribed recipients;
+the no-recipient push path is unchanged.
+
+With the writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia after, req/s | Read p99 before → after, ms | Writer p99 before → after, ms |
+|---|---:|---:|---:|---:|
+| Room page | 76,972 | 77,597 | 0.841 → 0.853 | 4.647 → 4.511 |
+| Messages page | 81,344 | 82,148 | 0.839 → 0.832 | 5.555 → 7.955 |
+| Sidebar | 88,406 | 89,369 | 0.658 → 0.639 | 3.289 → 3.703 |
+| Search | 85,040 | 86,151 | 0.809 → 0.730 | 7.919 → 4.559 |
+
+Each timed writer sample acknowledged 80 posts at 9.9 posts/second; warmups
+acknowledged 45–50. Across all twelve timed writer samples, median p99 fell from
+5.203 to 4.679 ms and the highest individual p99 from 18.959 to 8.367 ms, but
+per-route results varied as shown. All latency figures are medians of per-run
+p99s, not pooled percentiles. Container lifetime peak memory changed from
+1,704.9 to 1,718.1 MiB normally and from 1,602.1 to 1,596.5 MiB with the writer.
+These cgroup peaks include page cache and warmup, not just Julia's heap.
+
+Push preparation now projects subscription and message rows into named tuples
+with explicit field types. This gives Julia concrete array elements and fields
+without rebuilding a heterogeneous tuple for every row. Nullable columns retain
+`Missing`, and SQLite.jl still owns parameter binding and copies result strings.
+The SQL, read order, authorization checks, room/author race guard, mention
+verification and JSON payloads are unchanged. No new C bindings are needed.
+
+For a warmed fixture message with three deliveries, preparation changed from
+40.27 to 31.19 µs (22.6% less time) and from 25,328 to 20,864 Julia heap bytes
+(17.6% less allocation). Five alternating rounds of 300 calls compare the exact
+previous implementation against the new projections. All seven scenarios
+produce equal full subscription tuples and JSON payloads, including nullable
+keys, mentions, an unnamed direct room, no recipients and a missing message.
+No-recipient allocation is unchanged at 5,376 bytes. These component figures
+exclude HTTP, scheduling, encryption, network delivery, native SQLite allocation
+and the rest of the posting transaction.
+
+Two other experiments were rejected. A membership existence check mostly moved
+full-text-index work into COMMIT and made actual membership updates slower.
+Disabling SQLite connection mutexes for exclusively leased readers improved the
+four-worker cached-handler median by only 1.1%, with overlapping samples and
+unchanged allocation, which did not justify using an internal handle adapter.
+Neither experiment changes the production server. A concrete delivery-result
+vector also offered less than 0.6% component timing improvement and allocated
+more for one-delivery cases, so the existing result-vector type is retained.
+
+This uses the preceding harness unchanged: three rounds, a five-second warmup
+at four clients followed by eight seconds at 16 clients, gzip, a 64 MiB response
+cache, four Julia workers and one interactive thread. Server CPUs are `0,2,4,6`
+and client CPUs `8,10,12,14`. Builds, tests and component measurements finished
+before full-server timing. The databases are on `/tmp` tmpfs; these results do
+not measure durable-disk synchronization costs.
+
+The current result reaches 92% of the historical C posting throughput
+(4,884 req/s) and 76% of Rust's (5,922 req/s). Only Julia was rerun. The native
+references use SQLite `NORMAL`, while both compared Julia builds use `FULL`.
+
+The modified push test file passes 149 assertions, including nullable fields,
+copied-string lifetime, current recipient state, edits and the room/author race
+guard. Temporary coverage probes were removed, JuliaFormatter 2.14's second
+pass made no changes, and the unchanged Chromium smoke test passed. The full
+benchmark validated 24,749,268 responses including warmup, with zero errors or
+invalid responses. Independent audits matched all 163,668 acknowledged writes
+to exact message IDs, rooms, rich-text bodies and FTS entries in six databases;
+integrity checks passed and DB/WAL hashes were unchanged by the audits.
+
+The measured image is
+`sha256:3a4f0494a72c93fa8823457f72dd837e5b5b91051f037b918cb89535a6b283b2`,
+built from `0b2d6d3` plus the archived patch. Runtime source SHA-256 is
+`88457bf73913146ca15fad2f6f0218ca52ca911778df70797121a95bbd93c784`.
+Results, receipt audits, baseline profiles, rejected experiments, component
+checks, exact source snapshots and validation logs are retained under
+`tmp/julia-full-server/2026-10-13-push-rows/` (ignored by Git).
+
 ## Message creation and rendering, 2026-10-13
 
 Reducing new-message hydration and rendering work increased posting throughput

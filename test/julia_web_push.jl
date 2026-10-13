@@ -298,6 +298,140 @@ end
                 @test isempty(
                     PushWeb.message_push_deliveries(app, 999, "https://campfire.test"),
                 )
+                @testset "Fixed push projections preserve fields and owned text" begin
+                    PushWeb.execute!(app, "SAVEPOINT push_projection_regressions")
+                    try
+                        subscriptions = PushWeb.message_push_subscriptions(app, 1)
+                        @test eltype(subscriptions) == PushWeb.PushSubscription
+                        @test sort([s.user_id for s in subscriptions]) == [2, 3]
+                        for subscription in subscriptions
+                            expected = merge(
+                                PushWeb.qone(
+                                    app,
+                                    "SELECT * FROM push_subscriptions WHERE id=?",
+                                    (subscription.id,),
+                                ),
+                                (
+                                    involvement = subscription.user_id == 2 ?
+                                                  "everything" : "mentions",
+                                    delivery_room_id = 1,
+                                    delivery_creator_id = 1,
+                                ),
+                            )
+                            @test isequal(subscription, expected)
+                        end
+                        @test isempty(PushWeb.message_push_subscriptions(app, 999))
+
+                        original = PushWeb.message_push_message(app, 1, 1, 1)
+                        @test original isa PushWeb.PushMessage
+                        @test original == (
+                            creator_id = 1,
+                            room_id = 1,
+                            author = "User 1",
+                            room_name = "Room",
+                            room_type = "Rooms::Open",
+                            editable_body = "Hello",
+                            plain_text = "Hello",
+                        )
+                        @test PushWeb.message_push_message(app, 999, 1, 1) === nothing
+                        @test PushWeb.message_push_message(app, 1, 2, 1) === nothing
+                        @test PushWeb.message_push_message(app, 1, 1, 2) === nothing
+
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE push_subscriptions SET auth_key=NULL,endpoint=NULL,p256dh_key=NULL,user_agent=NULL WHERE user_id=2",
+                        )
+                        nullable = only(
+                            s for s in PushWeb.message_push_subscriptions(app, 1) if
+                            s.user_id == 2
+                        )
+                        @test all(
+                            ismissing,
+                            (
+                                nullable.auth_key,
+                                nullable.endpoint,
+                                nullable.p256dh_key,
+                                nullable.user_agent,
+                            ),
+                        )
+                        @test isequal(
+                            nullable,
+                            merge(
+                                PushWeb.qone(
+                                    app,
+                                    "SELECT * FROM push_subscriptions WHERE id=?",
+                                    (nullable.id,),
+                                ),
+                                (
+                                    involvement = "everything",
+                                    delivery_room_id = 1,
+                                    delivery_creator_id = 1,
+                                ),
+                            ),
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE push_subscriptions SET auth_key='new-auth',endpoint='https://fcm.googleapis.com/changed',p256dh_key='new-key',user_agent='New agent ☕' WHERE user_id=2",
+                        )
+                        current = only(
+                            s for s in PushWeb.message_push_subscriptions(app, 1) if
+                            s.user_id == 2
+                        )
+                        @test current.user_agent == "New agent ☕"
+                        @test current.auth_key == "new-auth"
+                        @test current.p256dh_key == "new-key"
+                        @test current.endpoint == "https://fcm.googleapis.com/changed"
+                        # Earlier rows retain copied strings after rebinding and
+                        # resetting the same statement on subsequent reads.
+                        old = only(s for s in subscriptions if s.user_id == 2)
+                        @test old.endpoint == "https://fcm.googleapis.com/push/2"
+                        @test old.auth_key == PushWeb.urlbase64(auth)
+                        @test old.p256dh_key == PushWeb.urlbase64(recipient)
+                        @test ismissing(old.user_agent)
+                        @test ismissing(nullable.endpoint)
+
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE users SET name='Changed ☕' WHERE id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE rooms SET name=NULL,type='Rooms::Direct' WHERE id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE action_text_rich_texts SET body='<b>Edited ☕</b>' WHERE record_id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE message_search_index SET body='Edited ☕' WHERE rowid=1",
+                        )
+                        current_message = PushWeb.message_push_message(app, 1, 1, 1)
+                        @test ismissing(current_message.room_name)
+                        @test current_message.author == "Changed ☕"
+                        @test current_message.room_type == "Rooms::Direct"
+                        @test current_message.editable_body == "<b>Edited ☕</b>"
+                        @test current_message.plain_text == "Edited ☕"
+                        @test original.author == "User 1"
+                        @test original.room_name == "Room"
+                        @test original.editable_body == "Hello"
+                        @test original.plain_text == "Hello"
+                        PushWeb.execute!(
+                            app,
+                            "DELETE FROM action_text_rich_texts WHERE record_id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "DELETE FROM message_search_index WHERE rowid=1",
+                        )
+                        empty_body = PushWeb.message_push_message(app, 1, 1, 1)
+                        @test empty_body.editable_body == ""
+                        @test empty_body.plain_text == ""
+                    finally
+                        PushWeb.execute!(app, "ROLLBACK TO push_projection_regressions")
+                        PushWeb.execute!(app, "RELEASE push_projection_regressions")
+                    end
+                end
                 token = PushWeb.signed_token(app, "mention", "3")
                 PushWeb.execute!(
                     app,
