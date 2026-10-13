@@ -179,6 +179,107 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Push payloads outside the writer lock, 2026-10-13
+
+Push jobs now capture owned message text, eligible subscriptions and an aligned
+`Int64` badge vector under `app.lock`, then build every JSON payload after
+releasing it. Existing SQL, recipient/author checks, signed mentions and the
+room/creator race guard remain in the locked section. The complete batch is
+still prepared before its first send. There is no new cache, dependency,
+transaction change or task-scheduling change.
+
+In a fresh alternating old/new, new/old, old/new comparison, median posting
+throughput increased by 1.2%. Each route receives ten seconds of warmup at four
+clients and fifteen seconds of measurement at 16 clients:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page, cached control | 80,931.9 | 80,971.4 | 0.636 → 0.656 |
+| Post a message | 4,650.9 | 4,708.7 | 10.487 → 10.375 |
+
+Posting samples were 4,487.3 / 4,650.9 / 4,725.6 req/s before and
+4,635.8 / 4,708.7 / 4,831.8 after. Corresponding pairs improved by 3.3%,
+1.2% and 2.2%; the cached-read median changed by +0.05%. This is a modest
+observed gain from three short pairs, not proof of statistical significance.
+Latency columns are medians of per-run p99s, not pooled percentiles.
+
+The isolated three-recipient check measured:
+
+| Preparation metric | Before | After |
+|---|---:|---:|
+| Total helper time, µs | 35.486 | 35.260 |
+| Julia heap bytes | 20,976 | 20,688 |
+| Instrumented uncontended lock hold, µs | 36.081 | 35.076 |
+
+These are medians of seven warmed rounds of 500 calls per image. Each copy
+inserts the same deterministic message and sets the room memberships to
+`everything` with no active connections; active-user filtering leaves three
+eligible subscriptions. Complete subscription/payload hashes match. Total time
+and allocations are measured before installing diagnostic wrappers. Lock times
+come from separate instrumented rounds, so they should not be subtracted from
+the uninstrumented total. The empty timer/counter wrapper costs about 0.073 µs
+and allocates no Julia bytes. Timing includes SQLite work; allocation counts
+exclude native SQLite memory. Three warmed empty-recipient rounds measure
+5,376 → 5,344 bytes.
+The snapshot infers as `Union{Nothing, <concrete snapshot>}`. The small byte
+reduction includes the new badge vector and building the room path once per
+batch.
+
+A separate instrumented full-server check, one ten-second warmup/fifteen-second
+measurement per image at 16 clients, verified push completion:
+
+| Timed push-job metric | Before | After |
+|---|---:|---:|
+| Acknowledged posts = completed jobs | 68,732 | 70,144 |
+| Mean preparation lock hold, µs | 55.781 | 51.244 |
+| p99 preparation lock hold, µs | 86.748 | 80.267 |
+| Mean enqueue-to-completion, ms | 4.037 | 3.962 |
+| p99 enqueue-to-completion, ms | 15.799 | 16.051 |
+| Maximum unfinished jobs, reconstructed from timestamps | 35 | 34 |
+| Unfinished jobs at observed stop | 0 | 0 |
+
+Mean lock ownership falls by 8.1%, while push completion p99 is slightly higher;
+this single diagnostic pair does not establish a general tail-latency gain.
+Every warmup and measured receipt matches exactly one successful push job by
+message ID: 111,105 jobs before and 112,982 after. Each job prepares three
+payloads. All sender calls reach the existing local loopback-endpoint rejection,
+with no provider fetches or sender errors. This checks payload preparation and
+local handling, not real external delivery. The fixture and production sender
+remain the same as in the uninstrumented comparison.
+
+The completed-job rate from first enqueue to last finish is 4,581.3 → 4,677.4/s;
+including load-driver and confirmed-drain wall time gives 4,558.8 → 4,659.7/s.
+These instrumented rates are diagnostic only. Stop polling can lag by up to
+50 ms plus driver overhead; timestamp-derived backlog maxima cover the whole
+measured epoch. Evidence generation occurs after the drain marker. Together,
+the exact completion counts and bounded backlog provide no sign that the
+posting gain comes from accumulating unfinished push work.
+
+The modified push tests pass 177 assertions, including encoding while another
+task holds the writer lock, unequal badges across multiple devices, and owned
+snapshot values after subsequent database mutations. Temporary line/type/lock
+coverage probes hit all seven points and were removed. The formatted source
+passes the same tests and the unchanged Chromium smoke test; JuliaFormatter
+2.14's second pass was unchanged.
+
+The paired comparison validated 11,622,657 responses including warmup, with
+zero errors or invalid responses. Independent audits verified all 669,190
+acknowledged writes across six databases and twelve receipt files, including
+exact IDs, rooms, rich-text bodies and FTS entries. Integrity checks passed;
+DB/WAL hashes were unchanged by the audits.
+
+Both images use Julia 1.13.1, SQLite `FULL`, GC enabled, gzip, a 64 MiB response
+cache, four default threads plus one interactive thread, server CPUs `0,2,4,6`
+and client CPUs `8,10,12,14`. Databases are on `/tmp` tmpfs; this does not measure
+durable-disk synchronization. C and Rust were not rerun, and this comparison
+covers the room and POST routes rather than all read/mixed workloads.
+
+Baseline is `07b3e2a`, image `campfire-julia:typed-post`; candidate is
+`campfire-julia:push-snapshot`. Raw results, exact write receipts, source/image
+hashes, diagnostic scripts, test logs and the precommit patch are retained at
+`tmp/julia-full-server/2026-10-13-push-snapshot/` (ignored by Git). Runtime
+databases, storage and credentials are excluded from the evidence archive.
+
 ## Typed message and context rows, 2026-10-13
 
 Fixed row projections increased posting throughput by 4.5% in a fresh,

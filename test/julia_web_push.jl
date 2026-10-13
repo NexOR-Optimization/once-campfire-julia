@@ -443,6 +443,127 @@ end
                 deliveries =
                     PushWeb.message_push_deliveries(app, 1, "https://campfire.test")
                 @test sort([item[1].user_id for item in deliveries]) == [2, 3]
+                @testset "Owned push snapshots and unlocked payload encoding" begin
+                    PushWeb.execute!(app, "SAVEPOINT push_snapshot_regressions")
+                    try
+                        PushWeb.execute!(
+                            app,
+                            "INSERT INTO rooms(id,name,type,creator_id,created_at,updated_at) VALUES(2,'Other','Rooms::Open',1,?,?)",
+                            (timestamp, timestamp),
+                        )
+                        for (user, involvement) in ((2, "invisible"), (3, "everything"))
+                            PushWeb.execute!(
+                                app,
+                                "INSERT INTO memberships(room_id,user_id,involvement,unread_at,created_at,updated_at) VALUES(2,?,?,?,?,?)",
+                                (user, involvement, timestamp, timestamp, timestamp),
+                            )
+                        end
+                        PushWeb.execute!(
+                            app,
+                            "INSERT INTO push_subscriptions(id,user_id,endpoint,p256dh_key,auth_key,created_at,updated_at) SELECT 7,user_id,endpoint || '/other',p256dh_key,auth_key,created_at,updated_at FROM push_subscriptions WHERE id=2",
+                        )
+                        snapshot = PushWeb.message_push_snapshot(app, 1)
+                        @test snapshot.message isa PushWeb.PushMessage
+                        @test eltype(snapshot.subscriptions) == PushWeb.PushSubscription
+                        @test eltype(snapshot.badges) == Int64
+                        @test length(snapshot.subscriptions) == length(snapshot.badges) == 3
+                        @test Dict(
+                            sub.id => snapshot.badges[index] for
+                            (index, sub) in enumerate(snapshot.subscriptions)
+                        ) == Dict(2 => 1, 3 => 2, 7 => 1)
+                        expected =
+                            PushWeb.message_push_deliveries(app, 1, "https://campfire.test")
+                        @test isequal(PushWeb.message_push_deliveries(snapshot), expected)
+                        @test PushWeb.message_push_snapshot(app, 999) === nothing
+                        @test isempty(PushWeb.message_push_deliveries(nothing))
+
+                        # Encoding is independent of the database and completes
+                        # even while another task owns its writer lock.
+                        held, release = Channel{Nothing}(1), Channel{Nothing}(1)
+                        holder = @async lock(app.lock) do
+                            put!(held, nothing)
+                            take!(release)
+                        end
+                        take!(held)
+                        encoded = @async PushWeb.message_push_deliveries(snapshot)
+                        try
+                            @test islocked(app.lock)
+                            @test timedwait(() -> istaskdone(encoded), 5) == :ok
+                        finally
+                            put!(release, nothing)
+                            wait(holder)
+                        end
+                        @test isequal(fetch(encoded), expected)
+
+                        # A send may let another writer update all source rows.
+                        # The complete delivery batch must already own its data.
+                        sent_batch = Tuple{NamedTuple,String}[]
+                        batch_sender = function (app, sub, text)
+                            @test !islocked(app.lock)
+                            push!(sent_batch, (sub, text))
+                            if length(sent_batch) == 1
+                                lock(app.lock) do
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE users SET name='Changed author' WHERE id=1",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE rooms SET name='Changed room' WHERE id=1",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE action_text_rich_texts SET body='Changed markup' WHERE record_id=1",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE message_search_index SET body='Changed body' WHERE rowid=1",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE memberships SET unread_at=NULL",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE push_subscriptions SET endpoint=endpoint || '/changed',auth_key='changed-auth'",
+                                    )
+                                end
+                            end
+                            return 201
+                        end
+                        @test PushWeb.deliver_message_push!(
+                            app,
+                            1,
+                            "https://campfire.test";
+                            sender = batch_sender,
+                        ) === nothing
+                        @test isequal(sent_batch, expected)
+                        changed = PushWeb.message_push_snapshot(app, 1)
+                        @test changed.message.author == "Changed author"
+                        @test changed.message.room_name == "Changed room"
+                        @test changed.message.editable_body == "Changed markup"
+                        @test changed.message.plain_text == "Changed body"
+                        @test all(iszero, changed.badges)
+                        @test all(
+                            endswith(sub.endpoint, "/changed") for
+                            sub in changed.subscriptions
+                        )
+                        @test all(
+                            sub.auth_key == "changed-auth" for sub in changed.subscriptions
+                        )
+                        @test isequal(PushWeb.message_push_deliveries(snapshot), expected)
+                        @test snapshot.message.author == "User 1"
+                        @test snapshot.message.room_name == "Room"
+                        @test snapshot.message.plain_text == "Hello"
+                        @test all(
+                            sub.auth_key == PushWeb.urlbase64(auth) for
+                            sub in snapshot.subscriptions
+                        )
+                    finally
+                        PushWeb.execute!(app, "ROLLBACK TO push_snapshot_regressions")
+                        PushWeb.execute!(app, "RELEASE push_snapshot_regressions")
+                    end
+                end
                 subscription, payload = first(deliveries)
                 sent = Ref(false)
                 function fetcher(uri, ip, deadline; method, body, headers)

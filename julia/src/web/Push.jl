@@ -566,12 +566,12 @@ WHERE m.id=? AND m.room_id=? AND m.creator_id=?
     end
 end
 
-function message_push_deliveries(app, message_id, base_url)
+function message_push_snapshot(app, message_id)
     return lock(app.lock) do
         # Select current recipients before loading a body or preparing a payload.
         # No presentation, account, avatar, boost or attachment data is needed.
         subscriptions = message_push_subscriptions(app, message_id)
-        isempty(subscriptions) && return Tuple{NamedTuple,String}[]
+        isempty(subscriptions) && return nothing
         # Read fresh message text and author/room labels at delivery time. The
         # stored rich text is used only to verify mention identities; the push
         # body uses the plain-text search value, never rendered HTML.
@@ -583,32 +583,49 @@ function message_push_deliveries(app, message_id, base_url)
             first(subscriptions).delivery_room_id,
             first(subscriptions).delivery_creator_id,
         )
-        message === nothing && return Tuple{NamedTuple,String}[]
+        message === nothing && return nothing
         if any(subscription -> subscription.involvement == "mentions", subscriptions)
             mentioned = mentioned_user_ids(app, message.editable_body)
             filter!(subscriptions) do subscription
                 return subscription.involvement == "everything" ||
                        subscription.user_id in mentioned
             end
-            isempty(subscriptions) && return Tuple{NamedTuple,String}[]
+            isempty(subscriptions) && return nothing
         end
-        direct = message.room_type == "Rooms::Direct"
-        title = direct ? message.author : coalesce(message.room_name, "Campfire")
-        body = direct ? message.plain_text : message.author * ": " * message.plain_text
-        deliveries = Tuple{NamedTuple,String}[]
-        for subscription in subscriptions
-            badge = scalar(
+        # Capture counts in recipient order while the writer lock is held. All
+        # strings in this snapshot are already copied by SQLite.jl.
+        badges = Int64[
+            scalar(
                 app,
                 "SELECT count(*) FROM memberships WHERE user_id = ? AND unread_at IS NOT NULL AND involvement != 'invisible'",
                 (subscription.user_id,),
-            )
-            push!(
-                deliveries,
-                (subscription, push_json(title, body, "/rooms/$(message.room_id)", badge)),
-            )
-        end
-        return deliveries
+            ) for subscription in subscriptions
+        ]
+        return (; message, subscriptions, badges)
     end
+end
+
+function message_push_deliveries(snapshot)
+    snapshot === nothing && return Tuple{NamedTuple,String}[]
+    message = snapshot.message
+    direct = message.room_type == "Rooms::Direct"
+    title = direct ? message.author : coalesce(message.room_name, "Campfire")
+    body = direct ? message.plain_text : message.author * ": " * message.plain_text
+    path = "/rooms/$(message.room_id)"
+    deliveries = Tuple{NamedTuple,String}[]
+    for index in eachindex(snapshot.subscriptions)
+        subscription = snapshot.subscriptions[index]
+        badge = snapshot.badges[index]
+        push!(deliveries, (subscription, push_json(title, body, path, badge)))
+    end
+    return deliveries
+end
+
+function message_push_deliveries(app, message_id, base_url)
+    snapshot = message_push_snapshot(app, message_id)
+    # Release the writer lock before encoding; build the entire batch before
+    # deliver_message_push! sends anything, including when encoding throws.
+    return message_push_deliveries(snapshot)
 end
 
 function deliver_message_push!(app, message_id, base_url; sender = send_web_push)
