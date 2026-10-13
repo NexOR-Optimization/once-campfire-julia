@@ -263,7 +263,6 @@ function start_server(app::WebApp; host = "127.0.0.1", port = 3001, kwargs...)
         kwargs...,
     ) do stream
         req = stream.message
-        req.context[:client_ip] = string(first(getpeername(stream)))
         if HTTP.URI(req.target).path == "/cable" && HTTP.WebSockets.isupgrade(req)
             return serve_cable(app, stream)
         end

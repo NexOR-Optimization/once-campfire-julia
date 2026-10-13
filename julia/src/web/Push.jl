@@ -479,50 +479,60 @@ end
 
 function message_push_deliveries(app, message_id, base_url)
     return lock(app.lock) do
-        basic = qone(app, "SELECT creator_id FROM messages WHERE id = ?", (message_id,))
-        basic === nothing && return Tuple{NamedTuple,String}[]
-        author = qone(
-            app,
-            "SELECT * FROM users WHERE id = ? AND status = 0",
-            (basic.creator_id,),
-        )
-        author === nothing && return Tuple{NamedTuple,String}[]
-        account = something(qone(app, "SELECT * FROM accounts LIMIT 1"), EMPTY_ACCOUNT)
-        ctx = Context(
-            app,
-            HTTP.Request("GET", "/"),
-            "GET",
-            "/",
-            Dict{String,Any}(),
-            User(author),
-            account,
-            String(base_url),
-            "",
-            Event[],
-        )
-        message = get_message(ctx, message_id)
-        mentioned = mentioned_user_ids(ctx, message)
+        # Select current recipients before loading a body or preparing a payload.
+        # No presentation, account, avatar, boost or attachment data is needed.
         subscriptions = qrows(
             app,
             """
-SELECT p.*, m.involvement FROM push_subscriptions p
-JOIN users u ON u.id = p.user_id
-JOIN memberships m ON m.user_id = u.id AND m.room_id = ?
-WHERE u.status = 0 AND u.id != ? AND m.connections = 0
-  AND m.involvement IN ('everything', 'mentions')
+SELECT p.*, mm.involvement, msg.room_id AS delivery_room_id,
+  msg.creator_id AS delivery_creator_id FROM messages msg
+JOIN users author ON author.id=msg.creator_id AND author.status=0
+JOIN memberships mm ON mm.room_id=msg.room_id
+JOIN users recipient ON recipient.id=mm.user_id
+JOIN push_subscriptions p ON p.user_id=recipient.id
+WHERE msg.id=? AND recipient.status=0 AND recipient.id<>msg.creator_id
+  AND mm.connections=0 AND mm.involvement IN ('everything','mentions')
 """,
-            (message.room_id, message.creator_id),
+            (message_id,),
         )
-        room = qone(app, "SELECT name, type FROM rooms WHERE id = ?", (message.room_id,))
-        title = room.type == "Rooms::Direct" ? author.name : coalesce(room.name, "Campfire")
-        body =
-            room.type == "Rooms::Direct" ? message.plain_text :
-            author.name * ": " * message.plain_text
+        isempty(subscriptions) && return Tuple{NamedTuple,String}[]
+        # Read fresh message text and author/room labels at delivery time. The
+        # stored rich text is used only to verify mention identities; the push
+        # body uses the plain-text search value, never rendered HTML.
+        message = qone(
+            app,
+            """
+SELECT m.creator_id,m.room_id,u.name AS author,r.name AS room_name,r.type AS room_type,
+  COALESCE(rt.body,'') AS editable_body,COALESCE(idx.body,'') AS plain_text
+FROM messages m JOIN users u ON u.id=m.creator_id AND u.status=0
+JOIN rooms r ON r.id=m.room_id
+LEFT JOIN action_text_rich_texts rt ON rt.record_type='Message'
+  AND rt.record_id=m.id AND rt.name='body'
+LEFT JOIN message_search_index idx ON idx.rowid=m.id
+WHERE m.id=? AND m.room_id=? AND m.creator_id=?
+""",
+            # An external SQL writer can move a message between these reads.
+            # Never pair its new room or author with the old recipient list.
+            (
+                message_id,
+                first(subscriptions).delivery_room_id,
+                first(subscriptions).delivery_creator_id,
+            ),
+        )
+        message === nothing && return Tuple{NamedTuple,String}[]
+        if any(subscription -> subscription.involvement == "mentions", subscriptions)
+            mentioned = mentioned_user_ids(app, message.editable_body)
+            filter!(subscriptions) do subscription
+                return subscription.involvement == "everything" ||
+                       subscription.user_id in mentioned
+            end
+            isempty(subscriptions) && return Tuple{NamedTuple,String}[]
+        end
+        direct = message.room_type == "Rooms::Direct"
+        title = direct ? message.author : coalesce(message.room_name, "Campfire")
+        body = direct ? message.plain_text : message.author * ": " * message.plain_text
         deliveries = Tuple{NamedTuple,String}[]
         for subscription in subscriptions
-            subscription.involvement == "everything" ||
-                subscription.user_id in mentioned ||
-                continue
             badge = scalar(
                 app,
                 "SELECT count(*) FROM memberships WHERE user_id = ? AND unread_at IS NOT NULL AND involvement != 'invisible'",

@@ -74,11 +74,13 @@ function mention_token(ctx, id)
     return signed_token(ctx.app, "mention", string(id))
 end
 
-function mention_user(ctx, token)
-    id = verify_token(ctx.app, "mention", token)
+mention_user(ctx, token) = mention_user(ctx.app, token)
+
+function mention_user(app::WebApp, token)
+    id = verify_token(app, "mention", token)
     if isnothing(id)
         gid = verify_rails_message(
-            ctx.app,
+            app,
             "signed_global_ids",
             "attachable",
             token;
@@ -90,7 +92,7 @@ function mention_user(ctx, token)
         end
     end
     isnothing(id) && return nothing
-    return qone(ctx.app, "SELECT * FROM users WHERE id=? AND status=0", (id,))
+    return qone(app, "SELECT * FROM users WHERE id=? AND status=0", (id,))
 end
 
 function mention_html(ctx, user)
@@ -895,13 +897,12 @@ VALUES('body','Message',?,?,?,?)
     return stream_response(stream)
 end
 
-function mentioned_user_ids(ctx, message)
+mentioned_user_ids(ctx, message) = mentioned_user_ids(ctx.app, message.editable_body)
+
+function mentioned_user_ids(app::WebApp, body::AbstractString)
     ids = Set{Int64}()
-    for matched in eachmatch(
-        r"<action-text-attachment\s+[^>]*sgid=\"([^\"]+)\"",
-        message.editable_body,
-    )
-        user = mention_user(ctx, matched[1])
+    for matched in eachmatch(r"<action-text-attachment\s+[^>]*sgid=\"([^\"]+)\"", body)
+        user = mention_user(app, matched[1])
         isnothing(user) || push!(ids, user.id)
     end
     return ids

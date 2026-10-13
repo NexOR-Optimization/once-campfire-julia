@@ -1,4 +1,4 @@
-using Test, HTTP, SHA, JSON3, Sockets
+using Test, HTTP, SHA, JSON3, Sockets, SQLite
 
 if !isdefined(@__MODULE__, :Campfire)
     include("../julia/src/Campfire.jl")
@@ -364,6 +364,237 @@ end
                     sender = sender,
                 )
                 @test sort(sent_ids) == [2, 3]
+                @testset "Fresh push text and recipients" begin
+                    PushWeb.execute!(app, "SAVEPOINT push_payload_regressions")
+                    try
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET involvement='nothing' WHERE user_id=3",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE users SET name='Updated author',role=2 WHERE id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE rooms SET name='Updated room',type='Rooms::Direct' WHERE id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE action_text_rich_texts SET body='<b>Updated text</b>' WHERE record_id=1",
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE message_search_index SET body='Updated ☕ text' WHERE rowid=1",
+                        )
+                        deliveries =
+                            PushWeb.message_push_deliveries(app, 1, "https://campfire.test")
+                        @test only(deliveries)[1].user_id == 2
+                        payload = JSON3.read(only(deliveries)[2])
+                        @test payload.title == "Updated author"
+                        @test payload.options.body == "Updated ☕ text"
+                        @test payload.options.icon == "/account/logo"
+                        @test payload.options.data.path == "/rooms/1"
+                        @test payload.options.data.badge == 1
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE rooms SET name=NULL,type='Rooms::Open' WHERE id=1",
+                        )
+                        payload = JSON3.read(
+                            only(
+                                PushWeb.message_push_deliveries(
+                                    app,
+                                    1,
+                                    "https://campfire.test",
+                                ),
+                            )[2],
+                        )
+                        @test payload.title == "Campfire"
+                        @test payload.options.body == "Updated author: Updated ☕ text"
+
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET involvement='nothing' WHERE user_id IN (2,3)",
+                        )
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET involvement='mentions' WHERE user_id=3",
+                        )
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE action_text_rich_texts SET body=? WHERE record_id=1",
+                            (
+                                "<action-text-attachment sgid=\"invalid\"></action-text-attachment>",
+                            ),
+                        )
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE action_text_rich_texts SET body=? WHERE record_id=1",
+                            (
+                                "<action-text-attachment sgid=\"$token\"></action-text-attachment>",
+                            ),
+                        )
+                        @test only(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )[1].user_id == 3
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET connections=1 WHERE user_id=3",
+                        )
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET connections=0 WHERE user_id=3",
+                        )
+                        PushWeb.execute!(app, "UPDATE users SET status=1 WHERE id=3")
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(app, "UPDATE users SET status=0 WHERE id=3")
+                        PushWeb.execute!(app, "UPDATE users SET status=2 WHERE id=1")
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(app, "UPDATE users SET status=0 WHERE id=1")
+                        PushWeb.execute!(app, "DELETE FROM memberships WHERE user_id=3")
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                        PushWeb.execute!(app, "DELETE FROM messages WHERE id=1")
+                        @test isempty(
+                            PushWeb.message_push_deliveries(
+                                app,
+                                1,
+                                "https://campfire.test",
+                            ),
+                        )
+                    finally
+                        PushWeb.execute!(app, "ROLLBACK TO push_payload_regressions")
+                        PushWeb.execute!(app, "RELEASE push_payload_regressions")
+                    end
+                end
+
+                @testset "External message changes during push selection" begin
+                    PushWeb.execute!(
+                        app,
+                        "INSERT INTO rooms(id,name,type,creator_id,created_at,updated_at) VALUES(2,'Private','Rooms::Direct',1,?,?)",
+                        (timestamp, timestamp),
+                    )
+                    external = SQLite.DB(joinpath(directory, "push.sqlite3"))
+                    try
+                        for mutation in (
+                            "UPDATE messages SET room_id=2 WHERE id=1",
+                            "UPDATE messages SET creator_id=2 WHERE id=1",
+                        )
+                            changed = Ref(false)
+                            callback_error = Ref{Any}(nothing)
+                            callback = function (_, _, _, sql)
+                                try
+                                    # Run after recipient selection, just before
+                                    # the separate statement reads message text.
+                                    if !changed[] && occursin(
+                                        "COALESCE(rt.body",
+                                        unsafe_string(Ptr{UInt8}(sql)),
+                                    )
+                                        changed[] = true
+                                        PushWeb.execute_db!(external, mutation)
+                                    end
+                                catch error
+                                    callback_error[] = error
+                                end
+                                return Cint(0)
+                            end
+                            hook = @cfunction(
+                                $callback,
+                                Cint,
+                                (Cuint, Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid})
+                            )
+                            GC.@preserve hook callback external begin
+                                @test SQLite.C.sqlite3_trace_v2(
+                                    app.db.handle,
+                                    SQLite.C.SQLITE_TRACE_STMT,
+                                    hook,
+                                    C_NULL,
+                                ) == SQLite.C.SQLITE_OK
+                                try
+                                    @test isempty(
+                                        PushWeb.message_push_deliveries(
+                                            app,
+                                            1,
+                                            "https://campfire.test",
+                                        ),
+                                    )
+                                    @test changed[]
+                                    @test callback_error[] === nothing
+                                finally
+                                    SQLite.C.sqlite3_trace_v2(
+                                        app.db.handle,
+                                        0,
+                                        C_NULL,
+                                        C_NULL,
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE messages SET room_id=1,creator_id=1 WHERE id=1",
+                                    )
+                                end
+                            end
+                            @test sort([
+                                sub.user_id for (sub, _) in PushWeb.message_push_deliveries(
+                                    app,
+                                    1,
+                                    "https://campfire.test",
+                                )
+                            ]) == [2, 3]
+                        end
+                    finally
+                        SQLite.close(external)
+                        PushWeb.execute!(app, "DELETE FROM rooms WHERE id=2")
+                    end
+                end
                 @test PushWeb.deliver_test_push!(
                     app,
                     2,
@@ -389,6 +620,13 @@ end
                     "",
                     PushWeb.Event[],
                 )
+                @test PushWeb.mention_user(ctx, token).id == 3
+                @test PushWeb.mentioned_user_ids(
+                    ctx,
+                    (
+                        editable_body = "<action-text-attachment sgid=\"$token\"></action-text-attachment>",
+                    ),
+                ) == Set([3])
                 @test PushWeb.route_push_subscriptions(ctx).status == 303
                 @test length(ctx.events) == 1
                 @test ctx.events[1].kind == :push_test

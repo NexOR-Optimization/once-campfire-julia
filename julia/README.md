@@ -76,6 +76,12 @@ transport buffers are separate from the shared response-cache budget; at the
 connection limit their capacity could total 256 MiB. Close the HTTP server
 before closing `WebApp`.
 
+The transport records the socket peer address once per connection and serializes
+eligible headers directly into that connection's buffer. Push preparation reads
+current eligible subscriptions before loading message text, and fetches only the
+fields needed for notifications. It verifies signed mentions when a recipient
+requests mentions only. This reduces allocation and time holding the writer lock.
+
 ## Docker
 
 ```sh
@@ -163,6 +169,90 @@ infrastructure and compatibility code themselves, while Julia delegates several
 corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
+
+## Push preparation and transport overhead, 2026-10-13
+
+Removing unused presentation work from push preparation and reducing per-request
+transport work improved posting throughput by 24.5% and reads by 3.7–4.3%.
+Median requests/second over three runs:
+
+| Workload | Julia before | Julia after | Change | Rust reference | C reference |
+|---|---:|---:|---:|---:|---:|
+| Room page | 77,966 | 81,301 | +4.3% | 76,894 | 108,868 |
+| Messages page | 82,015 | 85,087 | +3.7% | 73,102 | 112,285 |
+| Sidebar | 86,979 | 90,161 | +3.7% | 87,414 | 116,207 |
+| Search | 84,073 | 87,498 | +4.1% | 87,199 | 112,151 |
+| Post a message | 2,713 | 3,378 | +24.5% | 5,922 | 4,884 |
+
+Julia reaches 100–116% of the earlier Rust read throughput and 75–78% of C's.
+Posting reaches 57% of Rust's and 69% of C's, so a substantial write gap remains.
+Only Julia was rerun; the preceding Julia and native results are historical
+references. Three short sequential runs do not establish statistical significance.
+Current posting samples ranged from 3,375 to 3,407 requests/second. Median posting
+p99 fell from 17.711 to 13.871 ms; all four normal read p99s also fell.
+
+With an additional writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page | 74,252 | 77,126 | 0.817 → 0.863 |
+| Messages page | 78,319 | 81,090 | 0.928 → 0.881 |
+| Sidebar | 86,285 | 89,013 | 0.730 → 0.683 |
+| Search | 82,694 | 85,334 | 0.845 → 0.807 |
+
+All twelve timed writer samples acknowledged 80 posts at 9.9 posts/second;
+warmup samples acknowledged 44–50. Writer median p99 increased from 4.537 to
+5.269 ms, and the highest individual p99 increased from 14.159 to 19.503 ms.
+Latency figures are medians of per-run p99s, not pooled percentiles.
+Normal-profile container lifetime peak memory increased from 1,674.9 to
+1,709.9 MiB; mixed-profile peak increased from 1,545.5 to 1,590.6 MiB.
+These cgroup peaks include page cache and warmup, rather than measuring Julia's
+heap alone. Read CPU remained around 382% normally and 376% with the writer.
+
+Push preparation now selects current eligible subscriptions first, loads only
+message text and author/room labels, and checks signed mentions only when needed.
+It avoids building a rendering context, sanitizing unused HTML, signing avatar
+URLs, or querying presentation associations. Payloads and recipients still use
+current database state. A room/creator check prevents an external SQL move
+between queries from pairing new message data with the old recipient list.
+The transport caches the actual socket peer string per connection and removes
+an intermediate header buffer while retaining HTTP.jl's serializer and the
+existing 64 KiB bound and fallback paths.
+
+On a warmed fixture message with three eligible subscriptions, push preparation
+allocated 25,472 Julia heap bytes versus 56,992 before, with median time falling
+from 99.40 to 45.98 µs. These are five alternating rounds of 500 preparations,
+with equal recipient IDs and JSON payloads; they exclude network delivery and
+native SQLite allocations. With no eligible subscriptions, allocation fell from
+42,560 to 5,376 bytes. Separately, warmed preparation and serialization of the
+same synthetic response with a 14,223-byte body fell from 3,440 to 2,560 bytes.
+That measurement excludes request construction, handlers, task creation
+and socket I/O. Neither component measurement is a whole-request allocation count.
+
+The full-server fixture, verification revision, release load generator, CPU
+affinity, four-worker allocation, gzip, five-second warmup, eight-second timed
+sample and 16-client concurrency match the preceding comparison. GC remains
+enabled and the response cache stays limited to 64 MiB. Builds, profiling and
+tests stopped before timing. All 306 assertions in the two modified test files
+passed, including fresh push eligibility/payloads, external message moves,
+keepalive/WebSocket peer identity, buffer ownership and HTTP framing. Temporary
+line probes confirmed the new paths ran and were removed before clean validation.
+The unchanged Chromium smoke test passed, and JuliaFormatter was idempotent.
+
+The comparison validated 24,067,638 responses including warmups, with zero errors
+or invalid responses across 54 primary invocations and 24 nested writer samples.
+The 16,323,251 timed responses include 960 paced writes. All 123,575 acknowledged
+writes, including warmups, were independently reconciled against exact persisted
+IDs, rooms, rich-text bodies and FTS bodies across six databases. Integrity checks,
+receipt hashes and the unchanged upstream acknowledged-write auditor all passed.
+
+The candidate image is
+`sha256:d42f5b3e6d2a4ffc77244b5c58d9fcc3bb06bc2e8e6f0af2bc4ccd7b1adf7c2b`,
+built from the working tree based on `5b8c6c2`; its runtime source digest is
+`d210404ff1b48c43f5e5a9d69bb8c3ac70162395e58a77428bfd5c5180b0cd5a`.
+Raw samples, receipts and hashes, source snapshots, component measurements,
+profiles, test logs and comparison analysis are retained under
+`tmp/julia-full-server/2026-10-13-push-transport/` (ignored by Git).
 
 ## Reusable response buffers and full-server comparison, 2026-10-12
 

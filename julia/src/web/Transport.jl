@@ -30,6 +30,29 @@ function response_scratch()
     )::ResponseScratch
 end
 
+# HTTP.Messages.writeheaders emits its complete serialized header block with
+# one write. Check that block before touching the connection-owned wire buffer.
+# This avoids copying the serialized headers through another temporary IOBuffer.
+struct ResponseHeaderSink <: IO
+    scratch::ResponseScratch
+    body_bytes::Int
+end
+
+function Base.unsafe_write(sink::ResponseHeaderSink, pointer::Ptr{UInt8}, n::UInt)
+    n <= MAX_COALESCED_RESPONSE_BYTES - sink.body_bytes || return 0
+    buffer = sink.scratch.wire
+    if buffer === nothing
+        buffer = IOBuffer(;
+            maxsize = MAX_COALESCED_RESPONSE_BYTES,
+            sizehint = Int(n) + sink.body_bytes,
+        )
+        sink.scratch.wire = buffer
+    end
+    truncate(buffer, 0)
+    seekstart(buffer)
+    return unsafe_write(buffer, pointer, n)
+end
+
 struct PreparedResponse
     wire::Union{Nothing,IOBuffer}
     response::HTTP.Response
@@ -70,27 +93,12 @@ function prepare_response(
        bytes <= MAX_COALESCED_RESPONSE_BYTES &&
        !chunked &&
        !HTTP.hasheader(request.response, "Upgrade")
-        # Headers use the public HTTP serializer and a temporary small buffer.
-        # Check their complete size before writing into bounded reusable storage:
-        # an IOBuffer maxsize alone can otherwise silently truncate a write.
-        headers = IOBuffer()
-        HTTP.Messages.writeheaders(headers, request.response)
-        wire_bytes = position(headers) + bytes
-        if wire_bytes <= MAX_COALESCED_RESPONSE_BYTES
-            buffer = scratch.wire
-            if buffer === nothing
-                # Allocate lazily, only after the response is eligible. maxsize
-                # bounds retained capacity even when IOBuffer grows geometrically.
-                buffer = IOBuffer(;
-                    maxsize = MAX_COALESCED_RESPONSE_BYTES,
-                    sizehint = wire_bytes,
-                )
-                scratch.wire = buffer
-            end
-            truncate(buffer, 0)
-            seekstart(buffer)
-            seekstart(headers)
-            write(buffer, headers)
+        # Keep HTTP.jl's serializer. The sink accepts the entire header block
+        # only when headers and body fit, leaving scratch untouched on fallback.
+        header_bytes =
+            HTTP.Messages.writeheaders(ResponseHeaderSink(scratch, bytes), request.response)
+        if header_bytes > 0
+            buffer = scratch.wire::IOBuffer
             write(buffer, body)
             seekstart(buffer)
             return PreparedResponse(buffer, response, bytes)
@@ -129,8 +137,15 @@ function threaded_connection(
     verbose,
 )
     try
+        # The accepted connection already records its socket peer. Keep one
+        # string for all its requests, including a later WebSocket upgrade.
+        peer = string(connection.peerip)
+        connection_handler = stream -> begin
+            stream.message.context[:client_ip] = peer
+            handler(stream)
+        end
         HTTP.Servers.handle_connection(
-            handler,
+            connection_handler,
             connection,
             listener,
             readtimeout,

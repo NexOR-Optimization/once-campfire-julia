@@ -99,9 +99,11 @@ end
                     "X-Large" => repeat("h", W.MAX_COALESCED_RESPONSE_BYTES),
                 )
             end
+            before_position = before === nothing ? nothing : position(before)
             prepared = prepare_transport_response(stream, body, skipped)
             @test prepared.wire === nothing
             @test skipped.wire === before
+            before === nothing || @test position(before) == before_position
             before === nothing || @test before.maxsize == W.MAX_COALESCED_RESPONSE_BYTES
             W.write_prepared_response(stream, prepared)
             @test endswith(String(take!(io.output)), body)
@@ -498,6 +500,7 @@ end
     shutdowns = Threads.Atomic{Int}(0)
     response_gate = Channel{Nothing}(1)
     response_entered = Channel{Nothing}(1)
+    peer_observations = Channel{Tuple{String,String}}(3)
     server = W.threaded_listen!(
         socket;
         readtimeout = 10,
@@ -507,9 +510,16 @@ end
         request = stream.message
         if HTTP.WebSockets.isupgrade(request)
             HTTP.WebSockets.upgrade(stream) do websocket
+                put!(
+                    peer_observations,
+                    (websocket.request.context[:client_ip], W.client_ip(websocket.request)),
+                )
                 HTTP.WebSockets.send(websocket, HTTP.WebSockets.receive(websocket))
             end
             return nothing
+        end
+        if request.target == "/echo"
+            put!(peer_observations, (request.context[:client_ip], W.client_ip(request)))
         end
         body = if request.target == "/parallel"
             before = "$(Threads.threadpool()):$(Threads.threadid())"
@@ -568,11 +578,15 @@ end
         # Both transactions reuse one connection; the adapter must preserve
         # sequential ownership and must not merge independent Set-Cookie fields.
         connection = connect(ip"127.0.0.1", port)
+        first_peer = nothing
         try
+            real_peer = string(first(getsockname(connection)))
             for body in ("first transaction", "second transaction")
                 write(
                     connection,
                     "POST /echo HTTP/1.1\r\nHost: localhost\r\n" *
+                    "Forwarded: for=203.0.113.7\r\n" *
+                    "X-Forwarded-For: 198.51.100.9\r\nX-Real-IP: 192.0.2.8\r\n" *
                     "Content-Length: $(ncodeunits(body))\r\n\r\n" *
                     body,
                 )
@@ -585,14 +599,31 @@ end
                 end
                 @test count(startswith("Set-Cookie:"), headers) == 2
                 @test String(read(connection, ncodeunits(body))) == body
+                cached_peer, resolved_peer = take!(peer_observations)
+                @test cached_peer == resolved_peer == real_peer == "127.0.0.1"
+                if first_peer === nothing
+                    first_peer = cached_peer
+                else
+                    # Equal bytes alone would not prove the string was reused.
+                    @test pointer(cached_peer) == pointer(first_peer)
+                end
             end
         finally
             close(connection)
         end
 
-        HTTP.WebSockets.open("ws://127.0.0.1:$port/cable") do websocket
+        HTTP.WebSockets.open(
+            "ws://127.0.0.1:$port/cable";
+            headers = [
+                "Forwarded" => "for=203.0.113.7",
+                "X-Forwarded-For" => "198.51.100.9",
+                "X-Real-IP" => "192.0.2.8",
+            ],
+        ) do websocket
             HTTP.WebSockets.send(websocket, "worker websocket")
             @test HTTP.WebSockets.receive(websocket) == "worker websocket"
+            cached_peer, resolved_peer = take!(peer_observations)
+            @test cached_peer == resolved_peer == "127.0.0.1"
         end
 
         finish = @async HTTP.get(base*"/finish"; retry = false)
