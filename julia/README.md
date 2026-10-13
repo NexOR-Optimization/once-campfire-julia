@@ -179,6 +179,119 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Typed message and context rows, 2026-10-13
+
+Fixed row projections increased posting throughput by 4.5% in a fresh,
+alternating comparison against the preceding push-row build. Both images use
+SQLite `FULL` with GC enabled. Three rounds alternate old/new, new/old, old/new;
+each route gets ten seconds of warmup at four clients and fifteen seconds of
+measurement at 16 clients:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page, cached control | 81,706.5 | 81,531.0 | 0.624 → 0.619 |
+| Post a message | 4,439.3 | 4,638.5 | 10.823 → 10.495 |
+
+Posting samples were 4,303.6 / 4,439.3 / 4,453.7 req/s before and
+4,567.2 / 4,638.5 / 4,684.3 after. Each corresponding pair improved, by
+6.1%, 4.5% and 5.2%. The cached-read median changed by -0.2%. Three short
+pairs do not establish statistical significance, and the paired check covers
+only these two routes. Container lifetime peak memory was 1,250.6 MiB before
+and 1,185.0 MiB after in this check.
+
+This extra comparison was necessary because the original full-route rerun was
+inconclusive against the saved measurements. With the previous five-second
+warmup/eight-second measurement protocol, posting was essentially unchanged
+at 4,503.3 versus 4,506.4 req/s; samples ranged from 4,198.9 to 4,548.6.
+Cached reads were also below the saved results:
+
+| Workload | Saved Julia, req/s | New Julia, req/s | p99 saved → new, ms |
+|---|---:|---:|---:|
+| Room page | 81,853 | 80,802 | 0.644 → 0.681 |
+| Messages page | 85,950 | 84,320 | 0.579 → 0.612 |
+| Sidebar | 90,456 | 88,814 | 0.467 → 0.538 |
+| Search | 88,277 | 83,857 | 0.534 → 0.697 |
+| Post a message | 4,506 | 4,503 | 10.671 → 10.679 |
+
+The same full-route rerun with a writer capped at ten posts/second to a separate
+room produced:
+
+| Workload | Saved Julia, req/s | New Julia, req/s | Read p99 saved → new, ms | Writer p99 saved → new, ms |
+|---|---:|---:|---:|---:|
+| Room page | 77,597 | 74,961 | 0.853 → 0.855 | 4.511 → 8.463 |
+| Messages page | 82,148 | 80,079 | 0.832 → 0.965 | 7.955 → 8.887 |
+| Sidebar | 89,369 | 88,205 | 0.639 → 0.681 | 3.703 → 5.807 |
+| Search | 86,151 | 84,809 | 0.730 → 0.839 | 4.559 → 4.571 |
+
+All twelve timed mixed writers acknowledged 80 posts at 9.9 posts/second.
+Across them, median writer p99 was 7.135 ms and the largest individual p99
+18.671 ms, versus 4.679 and 8.367 ms in the saved run. Container lifetime peaks
+were 1,865.4 MiB normally and 1,642.7 MiB with the writer, versus saved peaks of
+1,718.1 and 1,596.5 MiB. These cgroup figures include warmup and page cache;
+they are not Julia heap measurements. Latency columns throughout are medians
+of per-run p99s, not pooled percentiles. The alternating room/POST check does
+not settle the other read routes or mixed-writer latency changes.
+
+The implementation uses a concrete `CreatedMessageRow` for freshly inserted
+messages and a concrete `Account` for request contexts. Authentication constructs
+the existing `User` directly from the SQLite row. All three paths retain the
+existing SQL and SQLite.jl parameter binding/string ownership. Nullable fields,
+fresh authorization and session activity, legacy account column ordering,
+trigger-visible message values and attachment/boost fallback remain covered.
+No native bindings, dependencies, cross-request caches or lock-scope changes
+were added.
+
+Seven alternating warmed component rounds measured:
+
+| Operation | Time before → after, µs | Julia heap bytes before → after |
+|---|---:|---:|
+| Authenticate an active user | 12.456 → 9.783 | 8,112 → 6,640 |
+| Load account with styles/settings | 8.327 → 7.133 | 5,808 → 5,152 |
+| Load and prepare a plain new message | 14.290 → 12.693 | 9,984 → 9,152 |
+
+Authentication/account samples use 2,000 calls per round; message samples use
+1,000. Nine authentication/account scenarios preserve user/account fields and
+session-activity effects, and five message scenarios preserve complete rows,
+presentations and rendered HTML. Missing messages and association fallback
+retain their previous allocation. Component timings exclude HTTP, transaction
+commits and notification delivery. Julia heap counts exclude native SQLite
+allocation; message timing includes presentation preparation but not HTML
+serialization.
+
+A fresh profile of the preceding image confirmed generic row conversion in
+these paths before implementation. The modified authentication/account and
+message/media files pass 299 and 294 assertions respectively in `--project=test`,
+including temporary coverage probes that were subsequently removed. The final
+formatted source passes the same 593 assertions and the unchanged Chromium
+smoke test. JuliaFormatter 2.14's second pass made no changes.
+
+The normal/mixed rerun validated 23,819,693 responses including warmup and
+158,326 acknowledged writes. The paired check validated another 11,652,117
+responses and 648,218 writes across both images. All responses passed the
+unchanged shared contracts with zero errors or invalid responses. Independent
+audits verified all 806,544 writes against exact IDs, rooms, rich-text bodies
+and FTS entries in twelve databases; integrity checks passed and DB/WAL hashes
+were unchanged by the audits.
+
+Both comparisons use the same shared fixture, gzip, 64 MiB response cache,
+four Julia workers plus one interactive thread, server CPUs `0,2,4,6` and
+client CPUs `8,10,12,14`. Builds, tests and component runs finished before
+server timing. Databases remain on `/tmp` tmpfs, so these measurements do not
+establish durable-disk synchronization costs. C and Rust were not rerun; the
+longer paired measurements should not be substituted into the historical native
+comparison as if the protocols were identical.
+
+The candidate image is
+`sha256:26fc253402ef3ff7f47ba0c21e310bc0d8524ce2ed05f7828f0b9290f7e96004`,
+built from `e7f483c` plus the archived patch. Its runtime source SHA-256 is
+`5bffa5b2e92e00e6a1219e9774ae4bb52a947ceb389faeb144f593c23d7ed932`.
+The paired baseline uses an isolated checkout and the exact preceding image;
+both source trees match their recorded image provenance. The paired adapter
+only adds two Julia aliases, their runtime mapping and source-directory selection
+on top of the existing adapter; the workload, contracts and auditor are unchanged.
+Full and paired results, audits, source snapshots, profiles and checks are under
+`tmp/julia-full-server/2026-10-13-typed-post/` (ignored by Git).
+
 ## Typed push rows, 2026-10-13
 
 Typed row conversion increased posting throughput from 4,014 to 4,506 req/s

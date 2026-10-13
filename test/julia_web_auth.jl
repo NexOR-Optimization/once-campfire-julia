@@ -211,6 +211,28 @@ auth_body(response) = String(copy(response.body))
                       ""
             end
 
+            @testset "typed empty account" begin
+                account = AuthWeb.current_account(app)
+                @test account isa AuthWeb.Account
+                @test account === AuthWeb.EMPTY_ACCOUNT
+                @test account.id == 0
+                @test account.name == "Campfire"
+                @test account.join_code == ""
+                @test account.custom_styles == ""
+                @test account.settings == "{}"
+                request = HTTP.Request("GET", "/first_run")
+                ctx = AuthWeb.current_context(
+                    app,
+                    request,
+                    Dict{String,Any}(),
+                    "/first_run",
+                    "GET",
+                )
+                @test ctx.user === nothing
+                @test ctx.account === account
+                @test fieldtype(AuthWeb.Context, :account) === AuthWeb.Account
+            end
+
             @test auth_test_request(app, "GET", "/session/new").status == 302
             @test auth_test_request(app, "GET", "/first_run").status == 200
             invalid_setup = auth_test_request(
@@ -247,6 +269,159 @@ auth_body(response) = String(copy(response.body))
                 app,
                 "SELECT count(*) FROM memberships WHERE user_id = 1",
             ) == 1
+            @testset "fresh typed account and uncached authentication" begin
+                request = HTTP.Request("GET", "/users/me/profile", ["Cookie" => admin])
+                token = AuthWeb.session_token(app, request)
+                user_fields(user) = (
+                    user.id,
+                    user.name,
+                    user.email_address,
+                    user.bio,
+                    user.role,
+                    user.status,
+                )
+                stored_user = AuthWeb.qone(app, "SELECT * FROM users WHERE id=1")
+                user = AuthWeb.authenticate(app, request)
+                @test user isa AuthWeb.User
+                @test user_fields(user) == user_fields(AuthWeb.row_user(stored_user))
+                @test !haskey(request.context, :session_activity)
+                account = AuthWeb.current_account(app)
+                @test account isa AuthWeb.Account
+                @test isequal(account, AuthWeb.qone(app, "SELECT * FROM accounts"))
+                @test AuthWeb.authenticate(app, HTTP.Request("GET", "/")) === nothing
+                @test AuthWeb.authenticate(
+                    app,
+                    HTTP.Request("GET", "/", ["Cookie" => admin * "0"]),
+                ) === nothing
+
+                # Migrated Rails databases may store columns in a different
+                # order from Julia's fresh schema. The reader selects by name.
+                AuthWeb.execute!(
+                    app,
+                    """CREATE TEMP TABLE accounts AS
+SELECT updated_at,singleton_guard,settings,name,join_code,custom_styles,created_at,id
+FROM main.accounts""",
+                )
+                try
+                    @test propertynames(AuthWeb.qone(app, "SELECT * FROM accounts")) !=
+                          propertynames(account)
+                    @test isequal(AuthWeb.current_account(app), account)
+                    ctx = AuthWeb.current_context(
+                        app,
+                        request,
+                        Dict{String,Any}(),
+                        "/users/me/profile",
+                        "GET",
+                    )
+                    @test isequal(ctx.account, account)
+                finally
+                    AuthWeb.execute!(app, "DROP TABLE temp.accounts")
+                end
+
+                AuthWeb.execute!(app, "BEGIN")
+                try
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE users SET name=?,email_address=NULL,bio=NULL WHERE id=1",
+                        ("Updated user ☕",),
+                    )
+                    updated_user = AuthWeb.authenticate(app, request)
+                    @test user_fields(updated_user) == (1, "Updated user ☕", "", "", 1, 0)
+                    @test user_fields(user) == user_fields(AuthWeb.row_user(stored_user))
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE users SET email_address=?,bio=? WHERE id=1",
+                        ("updated@test", "Updated biography ☕"),
+                    )
+                    @test user_fields(AuthWeb.authenticate(app, request)) == (
+                        1,
+                        "Updated user ☕",
+                        "updated@test",
+                        "Updated biography ☕",
+                        1,
+                        0,
+                    )
+                    @test updated_user.email_address == ""
+                    @test updated_user.bio == ""
+
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE accounts SET custom_styles=NULL,settings=NULL",
+                    )
+                    nullable = AuthWeb.current_account(app)
+                    @test nullable isa AuthWeb.Account
+                    @test nullable.custom_styles === missing
+                    @test nullable.settings === missing
+                    @test isequal(nullable, AuthWeb.qone(app, "SELECT * FROM accounts"))
+                    @test AuthWeb.value(nullable, :custom_styles) == ""
+                    @test AuthWeb.value(nullable, :settings, "{}") == "{}"
+                    AuthWeb.execute!(
+                        app,
+                        """UPDATE accounts SET name=?,join_code=?,custom_styles=?,settings=?,
+created_at=?,updated_at=?""",
+                        (
+                            "Updated account ☕",
+                            "fresh-join-code",
+                            "body { color: red; }",
+                            "{\"restrict_room_creation_to_administrators\":true}",
+                            "2000-01-01 00:00:00",
+                            "2001-01-01 00:00:00",
+                        ),
+                    )
+                    updated_account = AuthWeb.current_account(app)
+                    @test isequal(
+                        updated_account,
+                        AuthWeb.qone(app, "SELECT * FROM accounts"),
+                    )
+                    @test updated_account.name == "Updated account ☕"
+                    @test updated_account.join_code == "fresh-join-code"
+                    @test account.name == "Campfire"
+                    @test account.join_code != updated_account.join_code
+                    @test nullable.custom_styles === missing
+                    @test nullable.settings === missing
+                    ctx = AuthWeb.current_context(
+                        app,
+                        request,
+                        Dict{String,Any}(),
+                        "/users/me/profile",
+                        "GET",
+                    )
+                    @test isequal(ctx.account, updated_account)
+                    @test ctx.user.name == "Updated user ☕"
+                    # Generic account rows used by internal callers still convert
+                    # into the concrete context field, including NULL columns.
+                    ctx.account = AuthWeb.qone(app, "SELECT * FROM accounts")
+                    @test isequal(ctx.account, updated_account)
+
+                    AuthWeb.execute!(
+                        app,
+                        "UPDATE sessions SET last_active_at='2000-01-01 00:00:00' WHERE token=?",
+                        (token,),
+                    )
+                    @test AuthWeb.authenticate(app, request).id == 1
+                    @test request.context[:session_activity] == AuthWeb.scalar(
+                        app,
+                        "SELECT id FROM sessions WHERE token=?",
+                        (token,),
+                    )
+                    delete!(request.context, :session_activity)
+                    AuthWeb.execute!(app, "UPDATE users SET status=1 WHERE id=1")
+                    @test AuthWeb.authenticate(app, request) === nothing
+                    @test !haskey(request.context, :session_activity)
+                    AuthWeb.execute!(app, "UPDATE users SET status=0,role=2 WHERE id=1")
+                    @test AuthWeb.authenticate(app, request) === nothing
+                    AuthWeb.execute!(app, "UPDATE users SET role=1 WHERE id=1")
+                    AuthWeb.execute!(app, "DELETE FROM sessions WHERE token=?", (token,))
+                    @test AuthWeb.authenticate(app, request) === nothing
+                    AuthWeb.execute!(app, "DELETE FROM accounts")
+                    @test AuthWeb.current_account(app) === AuthWeb.EMPTY_ACCOUNT
+                finally
+                    AuthWeb.execute!(app, "ROLLBACK")
+                end
+                @test isequal(AuthWeb.current_account(app), account)
+                @test user_fields(AuthWeb.authenticate(app, request)) == user_fields(user)
+            end
+
             @testset "fresh typed cache identity" begin
                 request = HTTP.Request("GET", "/", ["Cookie" => admin])
                 token = AuthWeb.session_token(app, request)

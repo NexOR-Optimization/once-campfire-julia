@@ -733,12 +733,27 @@ function get_message(ctx, id; room = nothing)
     return isempty(rows) ? nothing : only(message_presentations(ctx, rows))
 end
 
-function get_created_message(ctx, id)
+const CreatedMessageRow = @NamedTuple{
+    id::Int64,
+    room_id::Int64,
+    creator_id::Int64,
+    client_message_id::String,
+    created_at::String,
+    updated_at::String,
+    author::String,
+    author_role::Int64,
+    room_name::Union{Missing,String},
+    room_type::String,
+    body::String,
+    plain_text::String,
+}
+
+function get_created_message_row(app, id)
     # New messages usually have no associations. Read the persisted values so
     # database triggers remain visible; uploads or trigger-created associations
     # use the ordinary presentation path.
-    row = qone(
-        ctx.app,
+    return withquery(
+        app,
         WEB_MESSAGE_COLUMNS * """
  WHERE m.id=?
  AND NOT EXISTS(SELECT 1 FROM boosts b WHERE b.message_id=m.id)
@@ -746,7 +761,30 @@ function get_created_message(ctx, id)
    WHERE a.record_type='Message' AND a.name='attachment' AND a.record_id=m.id)
 """,
         (id,),
-    )
+    ) do rows
+        for row in rows
+            # SQLite.jl copies text before withquery resets the statement.
+            return CreatedMessageRow((
+                row.id,
+                row.room_id,
+                row.creator_id,
+                row.client_message_id,
+                row.created_at,
+                row.updated_at,
+                row.author,
+                row.author_role,
+                row.room_name,
+                row.room_type,
+                row.body,
+                row.plain_text,
+            ))
+        end
+        return nothing
+    end
+end
+
+function get_created_message(ctx, id)
+    row = get_created_message_row(ctx.app, id)
     row === nothing && return get_message(ctx, id)
     return message_presentation(ctx, row, NamedTuple[], nothing)
 end
@@ -970,8 +1008,7 @@ function webhook_context(
 )
     path = "/rooms/$room/$(bot.id)-$(bot.bot_token)/messages"
     request = HTTP.Request("POST", path, ["Content-Type"=>"text/html"], body)
-    account =
-        something(qone(app, "SELECT * FROM accounts ORDER BY id LIMIT 1"), EMPTY_ACCOUNT)
+    account = current_account(app)
     return Context(
         app,
         request,

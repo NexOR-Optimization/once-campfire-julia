@@ -271,7 +271,7 @@ end
 function authenticate(app, req)
     token = session_token(app, req)
     token === nothing && return nothing
-    user = qone(
+    return withquery(
         app,
         """
 SELECT u.*, s.id AS session_id,
@@ -280,9 +280,13 @@ FROM users u JOIN sessions s ON s.user_id = u.id
 WHERE s.token = ? AND u.status = 0 AND u.role != 2
 """,
         (token,),
-    )
-    user === nothing || mark_session_activity!(req, user)
-    return row_user(user)
+    ) do rows
+        for row in rows
+            mark_session_activity!(req, row)
+            return row_user(row)::User
+        end
+        return nothing
+    end
 end
 
 function cached_identity(app, token, room_id::Union{Nothing,AbstractString} = nothing)

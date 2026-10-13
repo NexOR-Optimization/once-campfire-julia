@@ -665,6 +665,13 @@ end
                     @test plain.body == "<b>Coffee ☕ &amp; Julia</b>"
                     @test plain.plain_text == "Coffee ☕ & Julia"
                     @test isempty(plain.boosts) && plain.attachment === nothing
+                    stored_plain = W.get_created_message_row(app, plain.id)
+                    @test stored_plain isa W.CreatedMessageRow
+                    @test isconcretetype(typeof(stored_plain))
+                    @test isequal(
+                        stored_plain,
+                        W.qone(app, W.WEB_MESSAGE_COLUMNS * " WHERE m.id=?", (plain.id,)),
+                    )
                     sound = check_created(create_context("/play bell", "sound"))
                     @test sound.sound.name == "bell"
                     mentioned = check_created(create_context(mention_source, "mention"))
@@ -704,6 +711,7 @@ end
                     W.execute!(app, "UPDATE rooms SET name=NULL WHERE id=1")
                     unnamed = check_created(create_context("Unnamed room", "unnamed"))
                     @test ismissing(unnamed.room_name)
+                    @test W.get_created_message_row(app, unnamed.id) isa W.CreatedMessageRow
 
                     # The optimized path must read what triggers actually stored,
                     # even when it differs from the request and authenticated user.
@@ -773,7 +781,84 @@ END
                     @test linked.attachment.id == attached.attachment.id
                     @test linked.attachment.url == attached.attachment.url
                     @test linked.sound === nothing
+                    @test W.get_created_message_row(app, boosted.id) === nothing
+                    @test W.get_created_message_row(app, linked.id) === nothing
+                    @test W.get_created_message_row(app, attached.id) === nothing
+                    @test W.get_created_message_row(app, -1) === nothing
                     @test W.get_created_message(context("GET", "/"), -1) === nothing
+
+                    W.execute!(app, "SAVEPOINT projected_message_fields")
+                    try
+                        # Every read sees current persisted fields. Earlier rows
+                        # keep their copied strings after reuse of the statement.
+                        W.execute!(
+                            app,
+                            "UPDATE messages SET creator_id=2,room_id=2,client_message_id='new-client',created_at='2026-10-14 10:11:12.000',updated_at='2026-10-14 10:11:13.000' WHERE id=?",
+                            (plain.id,),
+                        )
+                        W.execute!(app, "UPDATE users SET name='Updated author' WHERE id=2")
+                        W.execute!(
+                            app,
+                            "UPDATE rooms SET name=NULL,type='Rooms::Direct' WHERE id=2",
+                        )
+                        W.execute!(
+                            app,
+                            "DELETE FROM action_text_rich_texts WHERE record_type='Message' AND record_id=? AND name='body'",
+                            (plain.id,),
+                        )
+                        W.execute!(
+                            app,
+                            "DELETE FROM message_search_index WHERE rowid=?",
+                            (plain.id,),
+                        )
+                        changed = W.get_created_message_row(app, plain.id)
+                        @test changed isa W.CreatedMessageRow
+                        @test changed.creator_id == 2 && changed.room_id == 2
+                        @test changed.client_message_id == "new-client"
+                        @test changed.created_at == "2026-10-14 10:11:12.000"
+                        @test changed.updated_at == "2026-10-14 10:11:13.000"
+                        @test changed.author == "Updated author"
+                        @test ismissing(changed.room_name)
+                        @test changed.room_type == "Rooms::Direct"
+                        @test changed.body == changed.plain_text == ""
+                        @test isequal(
+                            changed,
+                            W.qone(
+                                app,
+                                W.WEB_MESSAGE_COLUMNS * " WHERE m.id=?",
+                                (plain.id,),
+                            ),
+                        )
+                        @test isequal(
+                            W.get_created_message(context("GET", "/"), plain.id),
+                            W.get_message(context("GET", "/"), plain.id),
+                        )
+                        @test stored_plain.client_message_id == "plain"
+                        @test stored_plain.author == "Admin"
+                        @test stored_plain.room_name == "Room 1"
+                        @test stored_plain.body == "<b>Coffee ☕ &amp; Julia</b>"
+                        @test stored_plain.plain_text == "Coffee ☕ & Julia"
+                        binary_text = "Before\0after ☕"
+                        W.execute!(
+                            app,
+                            "UPDATE messages SET client_message_id=? WHERE id=?",
+                            (binary_text, plain.id),
+                        )
+                        embedded_null = W.get_created_message_row(app, plain.id)
+                        generic_null = W.qone(
+                            app,
+                            W.WEB_MESSAGE_COLUMNS * " WHERE m.id=?",
+                            (plain.id,),
+                        )
+                        @test isequal(embedded_null, generic_null)
+                        @test W.get_created_message_row(app, unnamed.id) isa
+                              W.CreatedMessageRow
+                        @test embedded_null.client_message_id ==
+                              generic_null.client_message_id
+                    finally
+                        W.execute!(app, "ROLLBACK TO projected_message_fields")
+                        W.execute!(app, "RELEASE projected_message_fields")
+                    end
 
                     W.execute!(app, "SAVEPOINT aborted_creation")
                     aborted = check_created(create_context("Roll back", "aborted"))

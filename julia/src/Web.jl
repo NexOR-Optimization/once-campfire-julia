@@ -100,6 +100,17 @@ mutable struct WebApp
     readers::Union{Nothing,ReadPool{WebApp}}
 end
 
+const Account = @NamedTuple{
+    id::Int64,
+    created_at::String,
+    custom_styles::Union{Missing,String},
+    join_code::String,
+    name::String,
+    settings::Union{Missing,String},
+    singleton_guard::Int64,
+    updated_at::String,
+}
+
 mutable struct Context
     app::WebApp
     req::HTTP.Request
@@ -107,14 +118,13 @@ mutable struct Context
     path::String
     params::Dict{String,Any}
     user::Union{Nothing,User}
-    account::NamedTuple
+    account::Account
     base_url::String
     csrf::String
     events::Vector{Event}
 end
 
-const EMPTY_ACCOUNT =
-    (id = 0, name = "Campfire", join_code = "", custom_styles = "", settings = "{}")
+const EMPTY_ACCOUNT = Account((0, "", "", "", "Campfire", "{}", 0, ""))
 nowstr() = Dates.format(now(UTC), dateformat"yyyy-mm-dd HH:MM:SS.sss")
 param(ctx, key, default = "") = get(ctx.params, key, default)
 function allparams(ctx, key)
@@ -514,10 +524,27 @@ function same_origin_request(app, req)
     return !startswith(expected, "https://") || site in ("same-origin", "none")
 end
 
+function current_account(app)
+    return withquery(app, "SELECT * FROM accounts ORDER BY id LIMIT 1") do rows
+        for row in rows
+            return Account((
+                row.id,
+                row.created_at,
+                row.custom_styles,
+                row.join_code,
+                row.name,
+                row.settings,
+                row.singleton_guard,
+                row.updated_at,
+            ))
+        end
+        return EMPTY_ACCOUNT
+    end
+end
+
 function current_context(app, req, parameters, path, method)
     user = authenticate(app, req)
-    account =
-        something(qone(app, "SELECT * FROM accounts ORDER BY id LIMIT 1"), EMPTY_ACCOUNT)
+    account = current_account(app)
     csrf = bytes2hex(
         hmac_sha256(
             Vector{UInt8}(codeunits(app.secret)),
