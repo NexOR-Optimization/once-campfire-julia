@@ -10,6 +10,113 @@ function request_on_worker(f::F, args::Vararg{Any,N}) where {F,N}
     return fetch(Threads.@spawn :default f(args...))
 end
 
+const MAX_COALESCED_RESPONSE_BYTES = 64 * 1024
+
+# Each HTTP connection runs on one interactive task. That task lends its
+# private scratch to its awaited worker, then owns it again until the complete
+# synchronous socket write returns. No other request can reuse it meanwhile.
+const RESPONSE_SCRATCH_KEY = gensym(:campfire_response_scratch)
+
+mutable struct ResponseScratch
+    wire::Union{Nothing,IOBuffer}
+end
+ResponseScratch() = ResponseScratch(nothing)
+
+function response_scratch()
+    return get!(
+        ResponseScratch,
+        task_local_storage(),
+        RESPONSE_SCRATCH_KEY,
+    )::ResponseScratch
+end
+
+struct PreparedResponse
+    wire::Union{Nothing,IOBuffer}
+    response::HTTP.Response
+    body_bytes::Int
+end
+
+function prepare_response(
+    app::WebApp,
+    request::HTTP.Request,
+    scratch::ResponseScratch = ResponseScratch(),
+)
+    return prepare_response(request, handle_request(app, request), scratch)
+end
+
+function prepare_response(
+    request::HTTP.Request,
+    response::HTTP.Response,
+    scratch::ResponseScratch = ResponseScratch(),
+)
+    # The connection task awaits this worker, so request metadata has one owner.
+    # Append to HTTP.jl's existing response to preserve Connection: close.
+    request.response.status = response.status
+    for header in response.headers
+        HTTP.appendheader(request.response, header)
+    end
+    body = response.body
+    supported_body =
+        body isa Union{String,SubString{String},Vector{UInt8},Base.CodeUnits{UInt8}}
+    bytes = supported_body ? (body isa AbstractString ? ncodeunits(body) : length(body)) : 0
+    body_allowed =
+        request.method != "HEAD" && response.status >= 200 && response.status ∉ (204, 304)
+    chunked = HTTP.hasheader(request.response, "Transfer-Encoding")
+    if body_allowed && supported_body && !chunked
+        HTTP.setheader(request.response, "Content-Length" => string(bytes))
+    end
+    if body_allowed &&
+       supported_body &&
+       bytes <= MAX_COALESCED_RESPONSE_BYTES &&
+       !chunked &&
+       !HTTP.hasheader(request.response, "Upgrade")
+        # Headers use the public HTTP serializer and a temporary small buffer.
+        # Check their complete size before writing into bounded reusable storage:
+        # an IOBuffer maxsize alone can otherwise silently truncate a write.
+        headers = IOBuffer()
+        HTTP.Messages.writeheaders(headers, request.response)
+        wire_bytes = position(headers) + bytes
+        if wire_bytes <= MAX_COALESCED_RESPONSE_BYTES
+            buffer = scratch.wire
+            if buffer === nothing
+                # Allocate lazily, only after the response is eligible. maxsize
+                # bounds retained capacity even when IOBuffer grows geometrically.
+                buffer = IOBuffer(;
+                    maxsize = MAX_COALESCED_RESPONSE_BYTES,
+                    sizehint = wire_bytes,
+                )
+                scratch.wire = buffer
+            end
+            truncate(buffer, 0)
+            seekstart(buffer)
+            seekstart(headers)
+            write(buffer, headers)
+            write(buffer, body)
+            seekstart(buffer)
+            return PreparedResponse(buffer, response, bytes)
+        end
+    end
+    return PreparedResponse(nothing, response, bytes)
+end
+
+function write_prepared_response(stream::HTTP.Stream, prepared::PreparedResponse)
+    wire = prepared.wire
+    if wire !== nothing &&
+       stream.stream isa HTTP.Connections.Connection &&
+       stream.nwritten < 0
+        # HTTP.jl still owns parsing, connection shutdown, and write completion.
+        iswritable(stream) || HTTP.startwrite(stream.stream)
+        stream.writechunked = false
+        stream.nwritten = 0
+        write(stream.stream, wire)
+        stream.nwritten = prepared.body_bytes
+    else
+        stream.nwritten < 0 && HTTP.startwrite(stream)
+        write(stream, prepared.response.body)
+    end
+    return nothing
+end
+
 function threaded_connection(
     handler,
     connection,

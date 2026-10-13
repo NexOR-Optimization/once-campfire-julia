@@ -67,7 +67,14 @@ Use one server process for now.
 The worker transport reuses HTTP.jl's parser, WebSocket handling and server
 lifecycle, with a default limit of 4,096 connections. Its adapter uses internal
 HTTP.jl 1.11 APIs isolated in `src/web/Transport.jl`; rerun its focused transport
-tests when upgrading HTTP.jl. Close the HTTP server before closing `WebApp`.
+tests when upgrading HTTP.jl. Workers serialize eligible responses into a private
+buffer owned by the connection task, which sends headers and body in one socket
+write. This buffer is allocated lazily, reused only after the write completes,
+and capped at 64 KiB including headers. Larger responses, upgrades, chunked
+responses and bodyless responses use HTTP.jl's ordinary write path. Retained
+transport buffers are separate from the shared response-cache budget; at the
+connection limit their capacity could total 256 MiB. Close the HTTP server
+before closing `WebApp`.
 
 ## Docker
 
@@ -122,6 +129,89 @@ outside source control.
 The browser flow and HTTP contracts complement the focused tests; neither proves
 complete production equivalence to every Rails behavior. The comparison adapter
 below adds Julia to the shared harness without editing its checkout.
+
+## Reusable response buffers and full-server comparison, 2026-10-12
+
+Moving response serialization onto workers and sending headers and body in one
+socket write improved read throughput by 34–41%. A private per-connection buffer
+avoids allocating a new response-sized byte array for every request. The
+HTTP.jl serializer, parser, connection lifecycle and WebSocket handling remain
+in use. Median requests/second over three runs:
+
+| Workload | Julia before | Julia after | Change | Rust reference | C reference |
+|---|---:|---:|---:|---:|---:|
+| Room page | 58,364 | 77,966 | +33.6% | 76,894 | 108,868 |
+| Messages page | 59,947 | 82,015 | +36.8% | 73,102 | 112,285 |
+| Sidebar | 61,889 | 86,979 | +40.5% | 87,414 | 116,207 |
+| Search | 60,840 | 84,073 | +38.2% | 87,199 | 112,151 |
+| Post a message | 2,780 | 2,713 | −2.4% | 5,922 | 4,884 |
+
+Reads are now close to or above the earlier Rust measurements. C still leads
+on all measured routes, and posting remains substantially slower than either
+native implementation. Only Julia was rerun: the preceding Julia and native
+results are historical references, and three short sequential runs do not
+establish statistical significance. Current read ranges were 77,852–78,205 for
+rooms, 81,691–82,214 for messages, 86,766–87,183 for sidebar, and 84,036–84,654
+for search. Posts ranged from 2,698 to 2,720 requests/second.
+
+With an additional writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page | 54,876 | 74,252 | 1.006 → 0.817 |
+| Messages page | 57,282 | 78,319 | 0.974 → 0.928 |
+| Sidebar | 60,928 | 86,285 | 0.819 → 0.730 |
+| Search | 59,289 | 82,694 | 0.909 → 0.845 |
+
+All twelve timed writer samples acknowledged 80 posts at 9.9 posts/second.
+Their median p99 was 4.537 ms; the highest individual p99 was 14.159 ms.
+Latency figures are medians of per-run p99s, not pooled percentiles.
+
+The normal workload has tradeoffs: room p99 increased from 0.589 to 0.683 ms,
+messages from 0.603 to 0.673 ms, and search from 0.616 to 0.657 ms. Sidebar p99
+fell from 0.616 to 0.605 ms and posting from 18.079 to 17.711 ms. Normal-profile
+container lifetime peak memory increased from 1,463.2 to 1,674.9 MiB; the mixed
+profile increased from 1,353.6 to 1,545.5 MiB. These are cgroup peaks including
+page cache and warmup, not Julia heap sizes. Read CPU remains around 382% in
+the normal workload. This change improves read throughput, not peak memory or
+every latency metric.
+
+The fixture, verification revision, release load generator, CPU affinity,
+four-worker allocation, gzip, five-second warmup, eight-second measurement and
+16-client concurrency match the preceding comparison. Builds, profiling and
+tests stopped before timing. GC remains enabled and the shared response cache
+is still limited to 64 MiB.
+
+For a synthetic 14,223-byte materialized response, warmed response preparation
+and serialization allocate 3,440 Julia heap bytes versus 2,560 before this
+change. This excludes request construction, the handler, task creation and
+socket I/O. It is not a zero-allocation transport: small headers and metadata
+still allocate. An intermediate version allocating a new wire buffer required
+18,128 bytes for the same operation and had worse read tail latency; that
+experiment was superseded. The previously measured cached-handler allocation
+of 2,544 bytes is a separate measurement. Tests also verify that warming the
+buffer removes body-sized allocation when the body grows to 32 KiB.
+
+All 183 assertions in the changed transport test passed, including byte framing,
+binary/gzip bodies, keepalive and pipelining, `100 Continue`, oversize fallback,
+concurrent buffer ownership, stalled writes and shutdown. Temporary line probes
+confirmed execution of the new paths and were removed before clean validation.
+The unchanged Chromium smoke test passed, and JuliaFormatter was idempotent.
+The full comparison validated 23,876,527 responses including warmups, with zero
+errors or invalid responses across 54 primary invocations and 24 nested writer
+samples. The 15,731,427 timed responses include 960 paced writes; all 100,090
+acknowledged writes including warmups were reconciled against persisted
+message IDs, bodies, rooms, rich text and FTS entries.
+
+The candidate image is
+`sha256:1259dd132f53acd1b5f49cc4e05940602161255266e08270249c0ab391b9e936`,
+built from the working tree based on `3878bd7`; its runtime source digest is
+`ac6da06ab653000aa5bff32ac82e8019e8c41c5fe503d91012e11c27b7226c66`.
+Raw samples, write receipts and hashes, source snapshots, allocation and profile
+evidence, test logs and comparison analysis are retained under
+`tmp/julia-full-server/2026-10-12-reused-response/` (ignored by Git). The incomplete
+allocating-buffer experiment is retained separately under
+`tmp/julia-full-server/2026-10-12-worker-wire/` and excluded from these totals.
 
 ## Inference fixes and full-server comparison, 2026-10-12
 

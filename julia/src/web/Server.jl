@@ -287,21 +287,10 @@ function start_server(app::WebApp; host = "127.0.0.1", port = 3001, kwargs...)
             Base.append!(body, chunk)
         end
         req.body = body
-        response = request_on_worker(handle_request, app, req)
-        HTTP.setstatus(stream, response.status)
-        for header in response.headers
-            HTTP.appendheader(req.response, header)
-        end
-        # Bodies are already materialized. A known length avoids chunk framing
-        # and its extra socket writes. HEAD and bodyless statuses omit it.
-        if req.method != "HEAD" && response.status >= 200 && response.status ∉ (204, 304)
-            bytes =
-                response.body isa AbstractString ? ncodeunits(response.body) :
-                length(response.body)
-            HTTP.setheader(stream, "Content-Length" => string(bytes))
-        end
-        HTTP.startwrite(stream)
-        write(stream, response.body)
+        # The connection task keeps ownership while its worker borrows scratch.
+        scratch = response_scratch()
+        prepared = request_on_worker(prepare_response, app, req, scratch)
+        write_prepared_response(stream, prepared)
         return nothing
     end
 end
