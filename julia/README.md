@@ -130,6 +130,40 @@ The browser flow and HTTP contracts complement the focused tests; neither proves
 complete production equivalence to every Rails behavior. The comparison adapter
 below adds Julia to the shared harness without editing its checkout.
 
+## Backend source size, 2026-10-13
+
+The implementations used in the comparison have the following source sizes:
+
+| Implementation | Backend code lines | Relative to Julia | Without whole generated table files |
+|---|---:|---:|---:|
+| Julia | 7,248 | 1.0× | 7,248 |
+| Rust | 35,740 | 4.9× | 31,667 |
+| C | 108,371 | 15.0× | 94,829 |
+
+Counts use `cloc` 2.06 and exclude blank lines, comments, tests, benchmarks,
+build tooling, third-party dependencies and shared frontend assets. They include
+backend source, rendering/templates, schema and application-owned media helpers.
+The main count includes checked-in generated application tables. The last column
+excludes whole generated table files but retains generated blocks inside other
+source files. Julia's retained prototype and seed helpers are included.
+
+Rust's inline test modules and test-support code were removed using syntax-tree
+spans before counting; both original and filtered files parsed successfully.
+`--docstring-as-code` preserves Julia's triple-quoted SQL/HTML as code, and
+`--force-lang='Jinja Template',html` recognizes comments in Askama templates.
+Revisions counted were Julia `0981a32`, Rust `6838ead` and C `873a51f`.
+Per-file counts, source manifests and filtering scripts are retained under
+`tmp/julia-loc/2026-10-13/` (ignored by Git).
+
+At these revisions, Julia reaches 96–112% of the earlier Rust read throughput
+and 72–75% of C's across the four measured read routes. Posting reaches 46% of
+Rust's and 56% of C's throughput. These use the measurements below; native
+implementations were not rerun for the source count. C and Rust maintain more
+infrastructure and compatibility code themselves, while Julia delegates several
+corresponding operations to packages. Source size reflects these implementation,
+dependency and formatting choices; it does not establish equivalent feature
+coverage or maintainability.
+
 ## Reusable response buffers and full-server comparison, 2026-10-12
 
 Moving response serialization onto workers and sending headers and body in one
