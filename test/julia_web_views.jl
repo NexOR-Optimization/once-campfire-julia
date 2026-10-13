@@ -1,4 +1,4 @@
-using Test, HTTP, Dates, JSON3
+using Test, HTTP, Dates, JSON3, SHA
 
 # Keep the rendering contract independently runnable while avoiding database and
 # HTTP-server setup. These are the same view files used by Campfire.Web.
@@ -235,4 +235,161 @@ end
         "data-sound-url-value=\"/assets/bell.mp3\"",
         V.message_html(ctx, sound_message),
     )
+end
+
+@testset "Streaming message HTML byte contract" begin
+    V = JuliaWebViewsTests
+    ctx = (
+        app = nothing,
+        user = (
+            id = 1,
+            name = "Alice <Admin>",
+            email_address = "alice@example.test",
+            bio = "Profile",
+            role = 1,
+        ),
+        account = (
+            name = "Campfire",
+            custom_styles = "body { --brand: blue; }",
+            join_code = "invite",
+        ),
+        base_url = "http://localhost:3000",
+        csrf = "safe&token",
+        path = "/session/transfers/token",
+    )
+    message = (
+        id = 8,
+        room_id = 4,
+        creator_id = 1,
+        author = ctx.user.name,
+        client_message_id = "client&1",
+        body = "<strong>Safe</strong>",
+        created_at = "2026-10-12 12:00:00.000",
+        room_name = "General <room>",
+        boosts = [],
+        attachment = nothing,
+    )
+    image_attachment = (
+        url = "/file?a=1&b=2",
+        filename = "image.png",
+        content_type = "image/png",
+        preview_url = "/file?a=1&b=2",
+    )
+    sound = (
+        name = "Bell <&>",
+        url = "/sounds/bell.mp3?a=1&b=2",
+        image_url = nothing,
+        text = "🔔 Ring <&>",
+    )
+    cases = (
+        plain = message,
+        boosts = merge(
+            message,
+            (
+                boosts = [
+                    (id = 1, booster_id = 2, content = "👍", author = "Bob <&>"),
+                    (id = 2, booster_id = 3, content = "❤️", author = "Chloë"),
+                ],
+            ),
+        ),
+        image = merge(message, (attachment = image_attachment,)),
+        video = merge(
+            message,
+            (
+                attachment = merge(
+                    image_attachment,
+                    (filename = "movie.mp4", content_type = "video/mp4"),
+                ),
+            ),
+        ),
+        audio = merge(
+            message,
+            (
+                attachment = merge(
+                    image_attachment,
+                    (filename = "song.mp3", content_type = "audio/mpeg"),
+                ),
+            ),
+        ),
+        file = merge(
+            message,
+            (
+                attachment = (
+                    url = "/file?a=1&b=2",
+                    filename = "report <&>.txt",
+                    content_type = "text/plain",
+                ),
+            ),
+        ),
+        sound_text = merge(message, (; sound)),
+        sound_image = merge(
+            message,
+            (
+                sound = merge(
+                    sound,
+                    (image_url = "/bell.png?a=1&b=2", width = 32, height = 48),
+                ),
+            ),
+        ),
+        attachment_over_sound = merge(message, (attachment = image_attachment, sound)),
+        edited = merge(
+            message,
+            (
+                created_at = "2026-10-12T12:00:00.123456Z",
+                updated_at = "2026-10-12T12:01:00.123Z",
+                avatar_token = "token<&>",
+                author = "Chloë <&> \"'",
+                body = "<p>日本語 😀</p>",
+            ),
+        ),
+        fallback = merge(
+            message,
+            (
+                created_at = missing,
+                updated_at = missing,
+                boosts = missing,
+                client_message_id = nothing,
+            ),
+        ),
+        string_id = merge(message, (id = "8&<>\"'", room_id = "4&<>\"'")),
+    )
+    # Digests come from b0d010d and preserve all output bytes,
+    # including escaping, ordering, indentation, and trailing newlines.
+    expected = (
+        plain = "1bfb463b4080544c9e8514aaae03ccb88d595302e9a45fc6027da7d8e0f7e1a5",
+        boosts = "ff4fef6098095101e41661bbf1ce93229aea5e1cb098f03e4f4a42f92767b981",
+        image = "774dcc0ff399de1a5705fd430d4202f97c7c503d666b3759af93031590baf0e4",
+        video = "d657af21709d2d96053be140ca6d184b99e70b80d081371f6594cc5904dee17a",
+        audio = "7d258ff43fc0ef8aa0735081f83f9c4e60e92521c4e4234493cf2adbb172d920",
+        file = "2cd360a8b401be6905754d918969b1c377310bcd62a68713aba0f91846010329",
+        sound_text = "b4e6653e67afdbcb45a48f3ff595a1ea11245ea65533bb61cdd0aeee61ba6c30",
+        sound_image = "78e09ec69cf0e1b7ea5f0ad7d5b76deed37528341d6c2cb9e3254264837a5826",
+        attachment_over_sound = "774dcc0ff399de1a5705fd430d4202f97c7c503d666b3759af93031590baf0e4",
+        edited = "d2c96325078fc815e37ceb8eeb4dc8e2080552968bcf9463678ce398bbf39ee1",
+        fallback = "b1fa37c4441ec882445280268737181875c797bd2811f5faa824c65b4b279775",
+        string_id = "4d107130b05f4623f9aba70f5825dc506d2b84c68bb4ea638a3f423899444192",
+    )
+    for (name, row) in pairs(cases)
+        rendered = V.message_html(ctx, row)
+        @test bytes2hex(sha256(rendered)) == expected[name]
+        io = IOBuffer()
+        print(io, "prefix|")
+        @test V.message_html(io, ctx, row) === nothing
+        print(io, "|suffix")
+        @test String(take!(io)) == "prefix|" * rendered * "|suffix"
+    end
+    io = IOBuffer()
+    @test V.boosts_html(io, ctx, cases.boosts) === nothing
+    @test String(take!(io)) == V.boosts_html(ctx, cases.boosts)
+    boost = first(cases.boosts.boosts)
+    @test V.boost_html(io, ctx, boost, message.id) === nothing
+    @test String(take!(io)) == V.boost_html(ctx, boost, message.id)
+
+    order = Int[]
+    JuliaWebViewsTests.@html io "$(push!(order, 1)[end]):$(push!(order, 2)[end])"
+    @test order == [1, 2]
+    @test String(take!(io)) == "1:2"
+    JuliaWebViewsTests.@html io "unchanged<&>"
+    @test String(take!(io)) == "unchanged<&>"
+    @test_throws ArgumentError macroexpand(JuliaWebViewsTests, :(@html io nonliteral))
 end

@@ -100,7 +100,7 @@ function handle_request(app::WebApp, req::HTTP.Request)
         return html_response("Request too large"; status = 413)
     path, parameters = try
         uri = HTTP.URI(req.target)
-        (String(uri.path), request_parameters(req))
+        (String(uri.path), request_parameters(req, uri))
     catch error
         @debug "Invalid request parameters" exception=error
         return html_response("Invalid request"; status = 400)
@@ -263,7 +263,7 @@ function start_server(app::WebApp; host = "127.0.0.1", port = 3001, kwargs...)
         kwargs...,
     ) do stream
         req = stream.message
-        if HTTP.URI(req.target).path == "/cable" && HTTP.WebSockets.isupgrade(req)
+        if HTTP.WebSockets.isupgrade(req) && HTTP.URI(req.target).path == "/cable"
             return serve_cable(app, stream)
         end
         # Limit both fixed and chunked uploads before accumulating the full body.

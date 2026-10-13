@@ -1,3 +1,13 @@
+# Interpolation keeps templates readable while writing directly to the caller's
+# buffer. Each value is evaluated once, in the same order as a normal string.
+macro html(io, template)
+    parts =
+        template isa String ? (template,) :
+        template isa Expr && template.head === :string ? template.args :
+        throw(ArgumentError("@html requires a literal string template"))
+    return Expr(:call, GlobalRef(Base, :print), esc(io), map(esc, parts)...)
+end
+
 # Rails' HTML contract translated into Julia. Browser interactions remain owned
 # by Campfire's existing Stimulus controllers, Turbo, and Lexxy.
 function value(row, key::Symbol, default = "")
@@ -214,29 +224,58 @@ function timestamp_ms(date)
 end
 
 function boost_html(ctx, boost, message_id)
+    io = IOBuffer(sizehint = 1024)
+    boost_html(io, ctx, boost, message_id)
+    return String(take!(io))
+end
+
+function boost_html(io::IO, ctx, boost, message_id)
     id = value(boost, :id)
-    return """<div id="boost_$id" class="boost boost-item flex-inline max-width align-center fill-white gap" data-controller="boost-delete" data-boost-delete-perform-class="boost--deleting" data-boost-delete-reveal-class="expanded" data-boost-delete-booster-id-value="$(value(boost,:booster_id,0))">
+    @html io """<div id="boost_$(id)" class="boost boost-item flex-inline max-width align-center fill-white gap" data-controller="boost-delete" data-boost-delete-perform-class="boost--deleting" data-boost-delete-reveal-class="expanded" data-boost-delete-booster-id-value="$(value(boost,:booster_id,0))">
       <span title="$(h(value(boost, :author)))" role="button" data-action="click->boost-delete#reveal keydown.enter->boost-delete#reveal:prevent" data-boost-delete-target="content">$(h(value(boost, :content)))</span>
       $(form_open(ctx, "/messages/$message_id/boosts/$id"; method="delete", csrf=false,attributes="data-action=\"boost-delete#perform turbo:submit-start->boost-delete#perform:stop\""))<button class="btn btn--negative boost__delete" data-boost-delete-target="button">$(screen("Delete this boost"))$(icon("minus"))</button></form></div>"""
+    return nothing
 end
 
 # The controller lives on the message so quick-boost forms and inline forms
 # share one streaming target. Unsubscribe while the redirect renders the frame.
 function boosts_html(ctx, message)
+    io = IOBuffer(sizehint = 512)
+    boosts_html(io, ctx, message)
+    return String(take!(io))
+end
+
+function boosts_html(io::IO, ctx, message)
     id = value(message, :id)
-    boosts = join(boost_html(ctx, b, id) for b in value(message, :boosts, []))
-    return """<turbo-frame id="boosting_message_$id"><div class="boosts flex flex-wrap align-center gap full-width" data-action="turbo:submit-start->turbo-streaming#unsubscribe">
-      <div id="boosts_message_$id" class="flex-inline flex-wrap gap" data-turbo-streaming-target="container">$boosts</div><turbo-frame id="new_boost_message_$id"></turbo-frame>
+    @html io """<turbo-frame id="boosting_message_$(id)"><div class="boosts flex flex-wrap align-center gap full-width" data-action="turbo:submit-start->turbo-streaming#unsubscribe">
+      <div id="boosts_message_$(id)" class="flex-inline flex-wrap gap" data-turbo-streaming-target="container">"""
+    for boost in value(message, :boosts, ())
+        boost_html(io, ctx, boost, id)
+    end
+    @html io """</div><turbo-frame id="new_boost_message_$(id)"></turbo-frame>
       </div></turbo-frame><span id="delete_boost_accessible_label" class="for-screen-reader">Press enter to delete this boost</span>"""
+    return nothing
 end
 
 function message_html(ctx, row)
+    io = IOBuffer(sizehint = 6144)
+    message_html(io, ctx, row)
+    return String(take!(io))
+end
+
+function message_html(io::IO, ctx, row)
     id = value(row, :id)
     room = value(row, :room_id)
     author_id = value(row, :creator_id)
     author = value(row, :author)
-    created = string(value(row, :created_at, nowstr()))
+    created_at = value(row, :created_at, nothing)
+    created = string(created_at === nothing ? nowstr() : created_at)
+    created_ms = timestamp_ms(created)
+    updated = value(row, :updated_at, created)
+    updated_ms = updated == created ? created_ms : timestamp_ms(updated)
     datetime = replace(created, ' ' => 'T') * (endswith(created, "Z") ? "" : "Z")
+    escaped_datetime = h(datetime)
+    escaped_author = h(author)
     permalink = ctx.base_url * "/rooms/$room/@$id"
     body = string(value(row, :body))
     sound = value(row, :sound, nothing)
@@ -263,28 +302,35 @@ function message_html(ctx, row)
             body = "<a href=\"$url\" download=\"$filename\">$filename</a>"
         end
     end
-    return """<div id="message_$id" class="message" data-controller="reply turbo-streaming" data-user-id="$author_id" data-message-id="$id" data-client-message-id="$(h(value(row, :client_message_id)))"
-      data-message-timestamp="$(timestamp_ms(created))" data-message-updated-at="$(timestamp_ms(value(row, :updated_at, created)))" data-sort-value="$(timestamp_ms(created))"
+    @html io """<div id="message_$(id)" class="message" data-controller="reply turbo-streaming" data-user-id="$(author_id)" data-message-id="$(id)" data-client-message-id="$(h(value(row, :client_message_id)))"
+      data-message-timestamp="$(created_ms)" data-message-updated-at="$(updated_ms)" data-sort-value="$(created_ms)"
       data-messages-target="message" data-search-results-target="message" data-refresh-room-target="message" data-reply-composer-outlet="#composer">
-      <h2 class="message__day-separator"><time datetime="$(h(datetime))" data-local-time-target="date"></time></h2>
-      <figure class="avatar message__avatar"><img src="$(avatar_url(ctx,author_id,value(row,:avatar_token,nothing)))" alt="$(h(author))"></figure>
-      <turbo-frame id="edit_message_$id"><div class="message__body"><div class="message__body-content">
-      <div class="message__meta"><h3 class="message__heading"><span class="message__author"><strong data-reply-target="author">$(h(author))</strong></span>
-      <a class="message__permalink" href="/rooms/$room/@$id" target="_top"><time class="message__timestamp" datetime="$(h(datetime))" data-local-time-target="time"></time></a>
-      <span class="message__room"><a href="/rooms/$room/@$id" target="_top" data-reply-target="link">$(h(value(row, :room_name)))</a></span></h3>
+      <h2 class="message__day-separator"><time datetime="$(escaped_datetime)" data-local-time-target="date"></time></h2>
+      <figure class="avatar message__avatar"><img src="$(avatar_url(ctx,author_id,value(row,:avatar_token,nothing)))" alt="$(escaped_author)"></figure>
+      <turbo-frame id="edit_message_$(id)"><div class="message__body"><div class="message__body-content">
+      <div class="message__meta"><h3 class="message__heading"><span class="message__author"><strong data-reply-target="author">$(escaped_author)</strong></span>
+      <a class="message__permalink" href="/rooms/$(room)/@$(id)" target="_top"><time class="message__timestamp" datetime="$(escaped_datetime)" data-local-time-target="time"></time></a>
+      <span class="message__room"><a href="/rooms/$(room)/@$(id)" target="_top" data-reply-target="link">$(h(value(row, :room_name)))</a></span></h3>
       <div class="message__actions"><details class="position-relative" data-controller="popup" data-action="keydown.esc->popup#close toggle->popup#toggle click@document->popup#closeOnClickOutside" data-popup-orientation-top-class="popup-orientation-top">
         <summary class="btn message__action-btn message__options-btn">$(icon("menu-dots-horizontal"))$(screen("Message options"))</summary>
         <div class="message__actions-menu border shadow" data-popup-target="menu"><div class="quick-boosts">
-        $(join(form_open(ctx,"/messages/$id/boosts"; csrf=false, attributes="data-turbo-frame=\"boosting_message_$id\" data-action=\"popup#close turbo:submit-start->turbo-streaming#unsubscribe\"") * "<input type=\"hidden\" name=\"boost[content]\" value=\"$emoji\"><button class=\"btn message__action-btn\" title=\"$title\" aria-label=\"$title\">$emoji</button></form>" for (emoji,title) in (("👍","Thumbs up"),("❤️","Heart"),("😂","Laugh"))))
-        <a href="/messages/$id/boosts/new" data-turbo-frame="new_boost_message_$id" class="btn message__action-btn">$(icon("boost"))$(screen("New boost"))</a></div>
+        """
+    quick_boost_url = h("/messages/$id/boosts")
+    for (emoji, title) in (("👍", "Thumbs up"), ("❤️", "Heart"), ("😂", "Laugh"))
+        @html io """<form action="$quick_boost_url" method="post" data-turbo-frame="boosting_message_$id" data-action="popup#close turbo:submit-start->turbo-streaming#unsubscribe"><input type="hidden" name="boost[content]" value="$emoji"><button class="btn message__action-btn" title="$title" aria-label="$title">$emoji</button></form>"""
+    end
+    write(io, '\n')
+    @html io """  <a href="/messages/$(id)/boosts/new" data-turbo-frame="new_boost_message_$(id)" class="btn message__action-btn">$(icon("boost"))$(screen("New boost"))</a></div>
         <div class="flex flex-wrap border-top margin-block-start-half pad-block-start-half message__actions-grid">
         <button class="btn message__action-btn" type="button" data-action="reply#reply" aria-label="Reply">$(icon("reply"))</button>
         <button class="btn message__action-btn" type="button" aria-label="Copy link" data-controller="copy-to-clipboard" data-action="copy-to-clipboard#copy" data-copy-to-clipboard-success-class="btn--success" data-copy-to-clipboard-content-value="$(h(permalink))">$(icon("link"))</button>
-        <a href="/rooms/$room/messages/$id/edit" class="btn message__action-btn message__edit-btn" data-turbo-frame="edit_message_$id" aria-label="Edit">$(icon("pencil"))</a></div></div>
+        <a href="/rooms/$(room)/messages/$(id)/edit" class="btn message__action-btn message__edit-btn" data-turbo-frame="edit_message_$(id)" aria-label="Edit">$(icon("pencil"))</a></div></div>
       </details></div></div>
-      <div id="presentation_message_$id" dir="auto" data-reply-target="body" data-messages-target="body"><div class="lexxy-content">$body</div></div>
-      $(boosts_html(ctx, row))
-      </div></div></turbo-frame></div>"""
+      <div id="presentation_message_$(id)" dir="auto" data-reply-target="body" data-messages-target="body"><div class="lexxy-content">$(body)</div></div>
+      """
+    boosts_html(io, ctx, row)
+    print(io, "\n</div></div></turbo-frame></div>")
+    return nothing
 end
 
 function edit_message_html(ctx, row)

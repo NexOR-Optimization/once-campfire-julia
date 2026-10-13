@@ -32,6 +32,7 @@ Configuration:
 | Variable | Default / purpose |
 |---|---|
 | `DATABASE_PATH` | `storage/julia.sqlite3`, used when the positional path is omitted |
+| `DATABASE_SYNCHRONOUS` | `FULL`; optionally `NORMAL` for SQLite WAL writes, with the durability tradeoff below |
 | `PORT` | `3001`, overridden by the second positional argument |
 | `CAMPFIRE_HOST` | `127.0.0.1` |
 | `JULIA_NUM_THREADS` | Julia thread pools; use `4,1` for four workers and one I/O thread (Docker defaults to `auto`) |
@@ -46,6 +47,14 @@ Use a copy when testing an existing Rails database. Supply its original
 transfers, and point `STORAGE_PATH` at its attachment files. Startup installs the
 current schema additions and message-count triggers. Back up the database and
 storage together. This process does not run Ruby or Redis.
+
+The writer explicitly defaults to SQLite `synchronous=FULL`. Setting
+`DATABASE_SYNCHRONOUS=NORMAL` can reduce synchronization work on durable storage,
+but recent committed transactions can be lost after a power failure or operating
+system crash. SQLite documents this distinction for
+[WAL synchronous settings](https://www.sqlite.org/pragma.html#pragma_synchronous).
+Only `FULL` and `NORMAL` are accepted; ordinary process crashes retain committed
+transactions with either setting.
 
 HTTP socket I/O and parsing stay on one interactive thread. Application requests
 run on the default worker pool. Room, message, sidebar and search GETs borrow
@@ -169,6 +178,125 @@ infrastructure and compatibility code themselves, while Julia delegates several
 corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
+
+## Message creation and rendering, 2026-10-13
+
+Reducing new-message hydration and rendering work increased posting throughput
+from 3,378 to 4,014 requests/second (+18.8%). Both Julia builds use SQLite WAL
+with `synchronous=FULL`; GC remains enabled. Median requests/second over three
+runs, compared with the preceding push/transport build:
+
+| Workload | Julia before | Julia after | Change | p99 before → after, ms |
+|---|---:|---:|---:|---:|
+| Room page | 81,301 | 81,100 | −0.2% | 0.673 → 0.651 |
+| Messages page | 85,087 | 84,829 | −0.3% | 0.644 → 0.607 |
+| Sidebar | 90,161 | 90,117 | ≈0% | 0.498 → 0.481 |
+| Search | 87,498 | 87,081 | −0.5% | 0.603 → 0.562 |
+| Post a message | 3,378 | 4,014 | +18.8% | 13.871 → 11.583 |
+
+Posting samples ranged from 3,999 to 4,033 requests/second. Read throughput was
+roughly unchanged. Latencies are medians of per-run p99s, not pooled percentiles.
+Three short sequential runs do not establish statistical significance.
+
+With an additional writer capped at ten posts/second to a separate room:
+
+| Workload | Julia before, req/s | Julia after, req/s | p99 before → after, ms |
+|---|---:|---:|---:|
+| Room page | 77,126 | 76,972 | 0.863 → 0.841 |
+| Messages page | 81,090 | 81,344 | 0.881 → 0.839 |
+| Sidebar | 89,013 | 88,406 | 0.683 → 0.658 |
+| Search | 85,334 | 85,040 | 0.807 → 0.809 |
+
+Mixed read throughput changed by −0.7% to +0.3%. All twelve timed writer samples
+acknowledged 80 posts at 9.9 posts/second; warmup samples acknowledged 45–50.
+Writer median p99 changed from 5.269 to 5.203 ms, and the highest individual p99
+from 19.503 to 18.959 ms, although per-route results varied. Container lifetime
+peak memory changed from 1,709.9 to 1,704.9 MiB normally and from 1,590.6 to
+1,602.1 MiB with the writer. These cgroup peaks include page cache and warmup,
+not just Julia's heap. Read CPU remained around 382% normally and 376% with the
+writer; saturated posting CPU increased from 267% to 291%.
+
+The main harness uses the unchanged shared Rails fixture, release load generator
+and route contracts, with three rounds, five seconds of warmup at four clients,
+then eight seconds at 16 clients per route. Gzip and the 64 MiB response cache
+remain enabled. Four Julia workers and one interactive thread use server CPUs
+`0,2,4,6`; client CPUs are `8,10,12,14`. Builds, tests, component benchmarks and
+profiling completed before the server timing runs.
+
+New-message hydration now reads the persisted row with indexed guards for
+boosts and attachments. The common case avoids the general page-association
+queries and temporary collections. Database-trigger changes remain visible;
+trigger-created associations fall back to the general path, and known uploads
+use it directly. Storage and presentation sanitization remain separate.
+
+Message HTML, boosts and quick-boost forms now write into one per-render buffer.
+A small `@html` macro preserves interpolated templates while sending their
+parts directly to `print`. Escaping and output bytes are preserved, timestamps
+are parsed once when equal, and the current time is computed only when missing.
+Ordinary HTTP requests also reuse their parsed URL. No SIMD dependency is needed
+for these SQL and string-processing improvements.
+
+Isolated component measurements:
+
+| Component | Julia heap bytes before → after | Median time before → after |
+|---|---:|---:|
+| Hydrate a plain newly created message | 19,856 → 10,016 | 33.15 → 15.35 µs |
+| Render plain message HTML | 19,568 → 11,632 | 9.32 → 6.21 µs |
+
+Hydration uses five alternating rounds of 500 calls on the same copied fixture;
+rendering uses seven alternating rounds of 5,000 calls. These exclude HTTP and
+network work, and hydration excludes native SQLite allocations. Rendering uses
+identical deterministic signing and clock stubs, so it excludes actual HMAC
+cost. Trigger-associated messages incur an extra guard query before falling
+back (about 6–7 µs in the component checks). The buffer is allocated per render;
+neither component is allocation-free or a whole-request allocation measurement.
+
+The SQLite settings check also exposed a difference in the historical native
+comparison: Julia used `FULL`, while C and Rust explicitly use `NORMAL`.
+`FULL` remains Julia's default, with an explicit `DATABASE_SYNCHRONOUS=NORMAL`
+option for comparisons that accept its durability tradeoff. Separate posting
+pilots used the same fixture, CPUs, 16 clients, an eight-second warmup and three
+eight-second measurements:
+
+| Build / writer setting | Median req/s | Sample range, req/s | Median p99, ms |
+|---|---:|---:|---:|
+| Previous Julia / FULL, first run | 3,191 | 2,955–3,441 | 16.591 |
+| Previous Julia / FULL, repeat | 3,399 | 3,391–3,412 | 13.927 |
+| Previous Julia / NORMAL | 3,440 | 3,427–3,472 | 13.583 |
+| Current Julia / FULL | 3,929 | 3,899–3,945 | 11.959 |
+| Current Julia / NORMAL | 3,990 | 3,989–3,992 | 11.903 |
+
+The same-setting code gain is 15.6% against the repeated FULL pilot and 16.0%
+under NORMAL. The current build's NORMAL pilot is only 1.5% above FULL, and the
+first baseline FULL run varied substantially. All these runs, including the
+historical full-server comparison, place their databases on `/tmp` tmpfs.
+They do not measure durable-disk synchronization cost or power-loss durability;
+a disk-backed comparison is needed to quantify that tradeoff.
+
+The current FULL result reaches 68% of the historical Rust posting throughput
+(5,922 req/s) and 82% of C's (4,884 req/s). C and Rust were not rerun, and their
+NORMAL setting differs from this FULL result. The pilot and main harness have
+different warmups and must not be combined as one experiment.
+
+Validation passed 599 assertions across the four modified Julia test files,
+48 separate old/new renderer byte comparisons across twelve scenarios, and the
+unchanged Chromium smoke test. Temporary line probes confirmed the new paths
+ran and were removed; JuliaFormatter 2.14 made no changes on its second pass.
+The main benchmark validated 24,324,216 responses including warmup, with zero
+errors or invalid responses. Independent audits matched all 145,904 acknowledged
+writes to exact message IDs, rooms, rich-text bodies and FTS entries across six
+databases; database integrity checks passed and the audits left DB/WAL bytes
+unchanged. The five separate SQLite pilots also passed an exact audit of
+560,344 acknowledgements across their five databases.
+
+The measured build is based on `b0d010d` plus the archived patch, with runtime
+source SHA-256
+`aba502417dd6c626a60725619548d0a9c13fef00b560114d58dc1cae450641ce`
+and Docker image
+`sha256:8a01741d07f8fcddb6e71b3888812cb78654615911b056741d5bcae7ffed7d59`.
+Raw normal/mixed results, comparisons, receipt hashes, the baseline POST profile,
+SQLite pilots, component checks, source snapshots and validation logs are under
+`tmp/julia-full-server/2026-10-13-message-create/` (ignored by Git).
 
 ## Push preparation and transport overhead, 2026-10-13
 

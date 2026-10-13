@@ -673,6 +673,22 @@ LEFT JOIN action_text_rich_texts rt ON rt.record_type='Message'
 LEFT JOIN message_search_index idx ON idx.rowid=m.id
 """
 
+function message_presentation(ctx, row, boosts, blob)
+    body, _ = sanitize_rich_text(row.body; ctx = ctx)
+    attachment = isnothing(blob) ? nothing : blob_presentation(ctx, blob)
+    return merge(
+        row,
+        (
+            body = body,
+            editable_body = row.body,
+            avatar_token = signed_token(ctx.app, "avatar", string(row.creator_id)),
+            boosts = boosts,
+            attachment = attachment,
+            sound = isnothing(attachment) ? message_sound(row.plain_text) : nothing,
+        ),
+    )
+end
+
 function message_presentations(ctx, rows)
     isempty(rows) && return rows
     # One association query for the whole page avoids an N+1 query per message.
@@ -696,19 +712,12 @@ WHERE a.record_type='Message' AND a.name='attachment'
         (ids,),
     )
     return map(rows) do row
-        body, _ = sanitize_rich_text(row.body; ctx = ctx)
         index = findfirst(blob -> blob.record_id == row.id, attachments)
-        attachment = isnothing(index) ? nothing : blob_presentation(ctx, attachments[index])
-        return merge(
+        return message_presentation(
+            ctx,
             row,
-            (
-                body = body,
-                editable_body = row.body,
-                avatar_token = signed_token(ctx.app, "avatar", string(row.creator_id)),
-                boosts = filter(boost -> boost.message_id == row.id, boosts),
-                attachment = attachment,
-                sound = isnothing(attachment) ? message_sound(row.plain_text) : nothing,
-            ),
+            filter(boost -> boost.message_id == row.id, boosts),
+            isnothing(index) ? nothing : attachments[index],
         )
     end
 end
@@ -722,6 +731,24 @@ function get_message(ctx, id; room = nothing)
     end
     rows = qrows(ctx.app, sql, parameters)
     return isempty(rows) ? nothing : only(message_presentations(ctx, rows))
+end
+
+function get_created_message(ctx, id)
+    # New messages usually have no associations. Read the persisted values so
+    # database triggers remain visible; uploads or trigger-created associations
+    # use the ordinary presentation path.
+    row = qone(
+        ctx.app,
+        WEB_MESSAGE_COLUMNS * """
+ WHERE m.id=?
+ AND NOT EXISTS(SELECT 1 FROM boosts b WHERE b.message_id=m.id)
+ AND NOT EXISTS(SELECT 1 FROM active_storage_attachments a
+   WHERE a.record_type='Message' AND a.name='attachment' AND a.record_id=m.id)
+""",
+        (id,),
+    )
+    row === nothing && return get_message(ctx, id)
+    return message_presentation(ctx, row, NamedTuple[], nothing)
 end
 
 function query_messages(ctx, room; before = nothing, after = nothing, around = nothing)
@@ -879,7 +906,7 @@ VALUES('body','Message',?,?,?,?)
         "INSERT INTO message_search_index(rowid,body) VALUES(?,?)",
         (id, plain),
     )
-    message = get_message(ctx, id)
+    message = upload isa UploadedFile ? get_message(ctx, id) : get_created_message(ctx, id)
     touch_message_room!(ctx, message; created = true)
     stream = message_stream("append", messages_target(room), message_html(ctx, message))
     broadcast_room!(ctx, room, stream)

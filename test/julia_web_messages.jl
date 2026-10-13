@@ -617,6 +617,184 @@ end
             logo = W.route_media(context("GET", "/account/logo"; user = nothing))
             @test HTTP.header(logo, "Content-Type") == "image/png"
             @test logo.body[1:8] == UInt8[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+            @testset "New message presentation matches stored messages" begin
+                function check_created(ctx; bot = false)
+                    response = W.route_messages(ctx)
+                    @test response.status == (bot ? 201 : 200)
+                    pushed = only(filter(event -> event.kind == :push, ctx.events))
+                    message = W.get_message(ctx, pushed.id)
+                    @test isequal(W.get_created_message(ctx, pushed.id), message)
+                    stream = W.message_stream(
+                        "append",
+                        W.messages_target(1),
+                        W.message_html(ctx, message),
+                    )
+                    room_event = only(filter(event -> event.kind == :room, ctx.events))
+                    @test room_event.id == 1
+                    @test room_event.payload == stream
+                    @test only(filter(event -> event.kind == :unread, ctx.events)).id == 1
+                    @test pushed.payload == ctx.base_url
+                    @test W.verify_token(app, "avatar", message.avatar_token) ==
+                          string(message.creator_id)
+                    if bot
+                        @test isempty(response.body)
+                        @test HTTP.header(response, "Location") ==
+                              "$(ctx.base_url)/rooms/1/messages/$(message.id)"
+                    else
+                        @test String(copy(response.body)) == stream
+                    end
+                    return message
+                end
+                create_context(body, client_id) = context(
+                    "POST",
+                    "/rooms/1/messages";
+                    parameters = Dict(
+                        "message[body]" => body,
+                        "message[client_message_id]" => client_id,
+                    ),
+                )
+                W.execute!(app, "SAVEPOINT created_presentations")
+                try
+                    plain = check_created(
+                        create_context(
+                            "<b>Coffee ☕ &amp; Julia</b><script>bad()</script>",
+                            "plain",
+                        ),
+                    )
+                    @test plain.body == "<b>Coffee ☕ &amp; Julia</b>"
+                    @test plain.plain_text == "Coffee ☕ & Julia"
+                    @test isempty(plain.boosts) && plain.attachment === nothing
+                    sound = check_created(create_context("/play bell", "sound"))
+                    @test sound.sound.name == "bell"
+                    mentioned = check_created(create_context(mention_source, "mention"))
+                    @test occursin("action-text-attachment", mentioned.editable_body)
+                    @test occursin("class=\"mention\"", mentioned.body)
+                    @test !occursin("action-text-attachment", mentioned.body)
+                    @test !occursin("Forged name", mentioned.body)
+                    forged = check_created(
+                        create_context(
+                            "Hello <action-text-attachment sgid=\"invalid\" caption=\"Guest\"></action-text-attachment>",
+                            "invalid-mention",
+                        ),
+                    )
+                    @test !occursin("class=\"mention\"", forged.body)
+                    robot = check_created(
+                        context(
+                            "POST",
+                            "/rooms/1/3-bot-token/messages";
+                            user = nothing,
+                            body = "Robot <b>reply</b>",
+                        );
+                        bot = true,
+                    )
+                    @test robot.creator_id == 3 && robot.author_role == 2
+
+                    attached = check_created(
+                        context(
+                            "POST",
+                            "/rooms/1/messages";
+                            parameters = Dict("message[attachment]" => upload),
+                        ),
+                    )
+                    @test attached.attachment !== nothing && attached.sound === nothing
+                    @test attached.plain_text == upload.filename
+                    trigger_blob =
+                        W.attachment_blob(app, "Message", attached.id, "attachment")
+                    W.execute!(app, "UPDATE rooms SET name=NULL WHERE id=1")
+                    unnamed = check_created(create_context("Unnamed room", "unnamed"))
+                    @test ismissing(unnamed.room_name)
+
+                    # The optimized path must read what triggers actually stored,
+                    # even when it differs from the request and authenticated user.
+                    W.execute!(
+                        app,
+                        """
+CREATE TEMP TRIGGER created_message_fields AFTER INSERT ON messages
+WHEN NEW.client_message_id='trigger-fields'
+BEGIN
+  UPDATE messages SET creator_id=2,client_message_id='persisted-client',
+    created_at='2026-10-13 12:34:56.000',updated_at='2026-10-13 12:34:57.000'
+    WHERE id=NEW.id;
+  UPDATE users SET name='Fresh author' WHERE id=2;
+  UPDATE rooms SET name='Fresh room' WHERE id=NEW.room_id;
+END
+""",
+                    )
+                    W.execute!(
+                        app,
+                        """
+CREATE TEMP TRIGGER created_message_body AFTER INSERT ON action_text_rich_texts
+WHEN NEW.record_type='Message' AND NEW.name='body'
+ AND EXISTS(SELECT 1 FROM messages WHERE id=NEW.record_id AND client_message_id='persisted-client')
+BEGIN
+  UPDATE action_text_rich_texts SET body='<em>Persisted body</em>' WHERE id=NEW.id;
+END
+""",
+                    )
+                    persisted =
+                        check_created(create_context("Original body", "trigger-fields"))
+                    @test persisted.creator_id == 2 && persisted.author == "Fresh author"
+                    @test persisted.room_name == "Fresh room"
+                    @test persisted.client_message_id == "persisted-client"
+                    @test persisted.created_at == "2026-10-13 12:34:56.000"
+                    @test persisted.updated_at == "2026-10-13 12:34:57.000"
+                    @test persisted.body ==
+                          persisted.editable_body ==
+                          "<em>Persisted body</em>"
+                    @test persisted.plain_text == "Original body"
+
+                    W.execute!(
+                        app,
+                        """
+CREATE TEMP TRIGGER created_message_boost AFTER INSERT ON messages
+WHEN NEW.client_message_id='trigger-boost'
+BEGIN
+  INSERT INTO boosts(booster_id,content,created_at,message_id,updated_at)
+    VALUES(2,'Trigger boost',NEW.created_at,NEW.id,NEW.created_at);
+END
+""",
+                    )
+                    boosted = check_created(create_context("Boosted", "trigger-boost"))
+                    @test only(boosted.boosts).content == "Trigger boost"
+                    W.execute!(
+                        app,
+                        """
+CREATE TEMP TRIGGER created_message_attachment AFTER INSERT ON messages
+WHEN NEW.client_message_id='trigger-attachment'
+BEGIN
+  INSERT INTO active_storage_attachments(blob_id,created_at,name,record_id,record_type)
+    VALUES($(trigger_blob.id),NEW.created_at,'attachment',NEW.id,'Message');
+END
+""",
+                    )
+                    linked =
+                        check_created(create_context("/play bell", "trigger-attachment"))
+                    @test linked.attachment.id == attached.attachment.id
+                    @test linked.attachment.url == attached.attachment.url
+                    @test linked.sound === nothing
+                    @test W.get_created_message(context("GET", "/"), -1) === nothing
+
+                    W.execute!(app, "SAVEPOINT aborted_creation")
+                    aborted = check_created(create_context("Roll back", "aborted"))
+                    W.execute!(app, "ROLLBACK TO aborted_creation")
+                    W.execute!(app, "RELEASE aborted_creation")
+                    @test W.get_created_message(context("GET", "/"), aborted.id) === nothing
+                    @test W.scalar(
+                        app,
+                        "SELECT count(*) FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
+                        (aborted.id,),
+                    ) == 0
+                    @test W.scalar(
+                        app,
+                        "SELECT count(*) FROM message_search_index WHERE rowid=?",
+                        (aborted.id,),
+                    ) == 0
+                finally
+                    W.execute!(app, "ROLLBACK TO created_presentations")
+                    W.execute!(app, "RELEASE created_presentations")
+                end
+            end
         finally
             close(app)
         end

@@ -3,6 +3,21 @@ if !isdefined(@__MODULE__, :Campfire)
     include(joinpath(@__DIR__, "../julia/src/Campfire.jl"))
 end
 
+@testset "Request target and form parameters" begin
+    W = Campfire.Web
+    req = HTTP.Request(
+        "POST",
+        "/rooms/1/messages?message%5Bbody%5D=query&label=Julia+%26+Ruby&tags%5B%5D=a&tags%5B%5D=b",
+        ["Content-Type" => "application/x-www-form-urlencoded"],
+        "message%5Bbody%5D=body+%F0%9F%91%8D",
+    )
+    parameters = W.request_parameters(req)
+    @test parameters["message[body]"] == "body 👍"
+    @test parameters["label"] == "Julia & Ruby"
+    @test parameters["tags[]"] == ["a", "b"]
+    @test W.request_parameters(req, HTTP.URI(req.target)) == parameters
+end
+
 @testset "Whole server HTTP and room authorization" begin
     W = Campfire.Web
     mktempdir() do directory
@@ -420,6 +435,12 @@ end
             server = W.start_server(app; server = listener)
             base = "http://127.0.0.1:$port"
             try
+                @test HTTP.get(base * "/up?invalid=%ZZ"; status_exception = false).status ==
+                      400
+                @test HTTP.get(
+                    base * "/up",
+                    ["Connection" => "Upgrade", "Upgrade" => "websocket"],
+                ).status == 200
                 headers = ["Cookie" => cookie, "Accept-Encoding" => "gzip"]
                 wire = HTTP.get(base * "/rooms/1", headers; decompress = false)
                 @test parse(Int, HTTP.header(wire, "Content-Length")) == length(wire.body)

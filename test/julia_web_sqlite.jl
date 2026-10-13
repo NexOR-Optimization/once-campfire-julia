@@ -3,6 +3,35 @@ if !isdefined(@__MODULE__, :Campfire)
     include(joinpath(@__DIR__, "../julia/src/Campfire.jl"))
 end
 
+@testset "Explicit SQLite writer durability" begin
+    W = Campfire.Web
+    mktempdir() do directory
+        path = joinpath(directory, "durability.sqlite3")
+        for (mode, expected) in (("FULL", 2), ("NORMAL", 1))
+            app = W.WebApp(path; secret = repeat("s", 64), readers = 0, synchronous = mode)
+            try
+                @test W.scalar(app, "PRAGMA synchronous") == expected
+                @test W.scalar(app, "PRAGMA journal_mode") == "wal"
+            finally
+                close(app)
+            end
+        end
+        for (mode, expected) in ((nothing, 2), ("NORMAL", 1))
+            withenv("DATABASE_SYNCHRONOUS" => mode) do
+                app = W.WebApp(path; secret = repeat("s", 64), readers = 0)
+                try
+                    @test W.scalar(app, "PRAGMA synchronous") == expected
+                finally
+                    close(app)
+                end
+            end
+        end
+        invalid_path = joinpath(directory, "invalid.sqlite3")
+        @test_throws ArgumentError W.WebApp(invalid_path; synchronous = "OFF")
+        @test !ispath(invalid_path)
+    end
+end
+
 @testset "Prepared SQLite operations preserve bindings and recovery" begin
     W = Campfire.Web
     mktempdir() do directory

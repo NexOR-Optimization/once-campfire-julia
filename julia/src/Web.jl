@@ -298,9 +298,12 @@ function WebApp(
     cache_budget = 64 * 1024^2,
     origin = "",
     readers::Integer = min(Threads.nthreads(:default), 4),
+    synchronous::AbstractString = get(ENV, "DATABASE_SYNCHRONOUS", "FULL"),
 )
     cache_budget >= 0 || throw(ArgumentError("negative cache budget"))
     readers >= 0 || throw(ArgumentError("negative reader count"))
+    synchronous in ("FULL", "NORMAL") ||
+        throw(ArgumentError("DATABASE_SYNCHRONOUS must be FULL or NORMAL"))
     initialize_media!()
     mkpath(dirname(abspath(path)))
     mkpath(storage_root)
@@ -323,6 +326,7 @@ function WebApp(
     observer = nothing
     observer_statement = nothing
     try
+        execute_db!(db, "PRAGMA synchronous=" * synchronous)
         initialize_schema!(db)
         observer = SQLite.DB(path)
         execute_db!(observer, "PRAGMA query_only=ON")
@@ -472,8 +476,7 @@ function flatten_json!(parameters, object, prefix = "")
     end
     return parameters
 end
-function request_parameters(req)
-    uri = HTTP.URI(req.target)
+function request_parameters(req, uri::HTTP.URI = HTTP.URI(req.target))
     parameters = Dict{String,Any}()
     decode_form!(parameters, uri.query)
     content_type = lowercase(first(split(HTTP.header(req, "Content-Type"), ';')))
