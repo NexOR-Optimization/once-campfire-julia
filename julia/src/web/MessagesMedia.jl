@@ -748,20 +748,15 @@ const CreatedMessageRow = @NamedTuple{
     plain_text::String,
 }
 
-function get_created_message_row(app, id)
-    # New messages usually have no associations. Read the persisted values so
-    # database triggers remain visible; uploads or trigger-created associations
-    # use the ordinary presentation path.
-    return withquery(
-        app,
-        WEB_MESSAGE_COLUMNS * """
+const CREATED_MESSAGE_SQL = WEB_MESSAGE_COLUMNS * """
  WHERE m.id=?
  AND NOT EXISTS(SELECT 1 FROM boosts b WHERE b.message_id=m.id)
  AND NOT EXISTS(SELECT 1 FROM active_storage_attachments a
    WHERE a.record_type='Message' AND a.name='attachment' AND a.record_id=m.id)
-""",
-        (id,),
-    ) do rows
+"""
+
+function query_created_message_row(app, id)
+    return withquery(app, CREATED_MESSAGE_SQL, (id,)) do rows
         for row in rows
             # SQLite.jl copies text before withquery resets the statement.
             return CreatedMessageRow((
@@ -781,6 +776,47 @@ function get_created_message_row(app, id)
         end
         return nothing
     end
+end
+
+get_created_message_row(app, id) = query_created_message_row(app, id)
+
+function get_created_message_row(app, id::Int64)
+    # New messages usually have no associations. Read the persisted values so
+    # triggers remain visible; uploads or trigger-created associations still use
+    # the ordinary presentation path.
+    row = with_statement(
+        prepared_statement(app, CREATED_MESSAGE_SQL),
+        (id,),
+    ) do handle, status
+        status == SQLite.C.SQLITE_DONE && return nothing
+        # Validate every storage class before decoding anything. SQLite permits
+        # unusual stored types; retain the generic projection's conversions for
+        # those rows instead of silently coercing them through native readers.
+        classes =
+            ntuple(column -> SQLite.C.sqlite3_column_type(handle, column - 1), Val(12))
+        all(column -> classes[column] == SQLite.C.SQLITE_INTEGER, (1, 2, 3, 8)) ||
+            return missing
+        all(column -> classes[column] == SQLite.C.SQLITE_TEXT, (4, 5, 6, 7, 10, 11, 12)) || return missing
+        classes[9] in (SQLite.C.SQLITE_NULL, SQLite.C.SQLITE_TEXT) || return missing
+        return CreatedMessageRow((
+            SQLite.sqlitevalue(Int64, handle, 1),
+            SQLite.sqlitevalue(Int64, handle, 2),
+            SQLite.sqlitevalue(Int64, handle, 3),
+            SQLite.sqlitevalue(String, handle, 4),
+            SQLite.sqlitevalue(String, handle, 5),
+            SQLite.sqlitevalue(String, handle, 6),
+            SQLite.sqlitevalue(String, handle, 7),
+            SQLite.sqlitevalue(Int64, handle, 8),
+            classes[9] == SQLite.C.SQLITE_NULL ? missing :
+            SQLite.sqlitevalue(String, handle, 9),
+            SQLite.sqlitevalue(String, handle, 10),
+            SQLite.sqlitevalue(String, handle, 11),
+            SQLite.sqlitevalue(String, handle, 12),
+        ))
+    end
+    # with_statement has reset the native statement before the fallback query.
+    # The creation caller's writer transaction keeps both reads in one snapshot.
+    return row === missing ? query_created_message_row(app, id) : row
 end
 
 function get_created_message(ctx, id)

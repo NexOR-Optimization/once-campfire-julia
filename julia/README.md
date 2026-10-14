@@ -179,6 +179,80 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Direct decoding of newly created messages, 2026-10-14
+
+The newly created message reader now bypasses SQLite.jl's generic `Query`/`Row`
+metadata when its 12 columns have their usual storage types. It checks every
+column before decoding, copies strings into an owned concrete row, and resets
+the statement through the existing native helper. Its fixed SQL string is also
+assembled once at module load. The SQL text and transaction
+boundary are unchanged, so database triggers and association guards remain
+visible. Unusual storage types use the original typed query projection after
+reset; non-`Int64` IDs also retain the generic path. The creation transaction
+keeps the fallback reread in the same database snapshot.
+
+An isolated diagnostic compares the exact previous reader with the new one in
+the same Julia 1.13.1 process:
+
+| Message lookup | Old time | New time | Old Julia bytes | New Julia bytes |
+|---|---:|---:|---:|---:|
+| Short plain message | 10.409 µs | 2.305 µs | 7,472 | 480 |
+| Unicode message | 10.437 µs | 2.336 µs | 7,552 | 560 |
+| Large Unicode message | 39.703 µs | 29.893 µs | 179,600 | 172,608 |
+| NULL room name, absent rich text | 10.214 µs | 2.200 µs | 7,296 | 336 |
+| Missing message | 5.668 µs | 1.159 µs | 5,696 | 0 |
+
+The short lookup takes 77.9% less time and allocates 93.6% fewer Julia bytes.
+Seven warmed rounds alternate old/new order on CPU 0 with one thread and GC
+enabled. Native SQLite execution is timed; native allocations are excluded from
+the byte counters. Transaction begin/commit, rendering, HTTP and notifications
+are outside these loops. Both readers infer `Union{Nothing, CreatedMessageRow}`;
+the improvement removes internal generic decoding work despite the previous
+reader's concrete return type. Exact rows, presentation and HTML match, and held
+strings survive statement reuse, GC, external commits and database close.
+
+The full-server before/after comparison reports:
+
+| Route | Baseline req/s | Candidate req/s | Baseline p99 | Candidate p99 |
+|---|---:|---:|---:|---:|
+| POST message | 4,890.6 | 5,163.8 | 10.199 ms | 9.479 ms |
+| Cached room | 82,075.4 | 82,026.0 | 0.602 ms | 0.607 ms |
+
+POST throughput rises 5.59% at the median, with individual paired gains of
+4.64%, 5.11% and 6.53%. Median POST p99 falls 7.06%. The cached-read control is
+nearly unchanged at -0.06%. Maximum POST container lifetime memory peaks are
+1,226.5 versus 1,216.0 MiB; they include startup, compilation and warmup, so this
+small difference does not establish lower steady-state resident memory.
+
+Three alternating rounds compare against `6d2b046`, with SQLite `FULL` in both
+builds, ten seconds of warmup at four clients and fifteen seconds at 16 clients.
+The fixture, release load generator, response contracts, gzip, 64 MiB cache and
+GC are unchanged. Julia uses four worker threads and one interactive thread;
+server CPUs are `0,2,4,6`, client CPUs `8,10,12,14`. Databases are on `/tmp`
+tmpfs, so these runs do not measure durable-disk synchronization cost. Latencies
+are medians of per-run p99 values. Other routes, C and Rust were not rerun for
+this step; the badge-count section retains the previous matched C comparison.
+
+The focused message/media tests pass 379 assertions in `--project=test` after
+formatting. Fifteen storage scenarios compare exact values or exception classes
+with the old decoder, followed by successful canonical reads to check statement
+recovery. Coverage probes confirm both decoding paths, then are removed. Existing
+NULL, Unicode, embedded-NUL, trigger, attachment, boost and rollback checks pass.
+JuliaFormatter 2.14's second pass is unchanged, and the unchanged Chromium smoke
+test passes against the candidate image.
+
+All 11,857,278 benchmark responses including warmup pass validation with zero
+errors or invalid responses. Independent read-only audits verify all 717,067
+acknowledged writes across six databases against exact IDs, rooms, rich-text
+bodies and FTS entries. Integrity checks pass and database/WAL hashes remain
+unchanged during the audit.
+
+The baseline image is `campfire-julia:stream-buffer`; the candidate is
+`campfire-julia:native-message-row`. Source/image hashes, raw paired results,
+receipts, component measurements, focused tests and precommit diff are retained
+under `tmp/julia-full-server/2026-10-14-native-message-row/` (ignored by Git).
+Runtime databases, storage and credentials are excluded from the evidence archive.
+
 ## Message streams in one buffer, 2026-10-14
 
 Message creation and editing now write the Turbo Stream envelope and existing

@@ -981,6 +981,117 @@ END
                         W.execute!(app, "RELEASE projected_message_fields")
                     end
 
+                    @testset "Native message rows preserve SQLite conversion semantics" begin
+                        canonical = W.query_created_message_row(app, plain.id)
+                        @test isequal(W.get_created_message_row(app, plain.id), canonical)
+                        for id in (Int32(plain.id), string(plain.id), Float64(plain.id))
+                            @test isequal(
+                                W.get_created_message_row(app, id),
+                                W.query_created_message_row(app, id),
+                            )
+                        end
+                        @test W.get_created_message_row(app, nothing) === nothing
+                        outcome(f) =
+                            try
+                                (value = f(), error = nothing)
+                            catch error
+                                (value = nothing, error = typeof(error))
+                            end
+                        for (scenario, sql, value) in (
+                            (:null_room, "UPDATE rooms SET name=? WHERE id=1", nothing),
+                            (
+                                :null_body,
+                                "UPDATE action_text_rich_texts SET body=? WHERE record_type='Message' AND record_id=$(plain.id)",
+                                nothing,
+                            ),
+                            (
+                                :null_search,
+                                "UPDATE message_search_index SET body=? WHERE rowid=$(plain.id)",
+                                nothing,
+                            ),
+                            (
+                                :text_role,
+                                "UPDATE users SET role=? WHERE id=1",
+                                "not a number",
+                            ),
+                            (:fractional_role, "UPDATE users SET role=? WHERE id=1", 1.5),
+                            (:numeric_role, "UPDATE users SET role=? WHERE id=1", 2.0),
+                            (
+                                :serialized_role,
+                                "UPDATE users SET role=? WHERE id=1",
+                                SQLite.sqlserialize(Int64(2)),
+                            ),
+                            (
+                                :blob_role,
+                                "UPDATE users SET role=? WHERE id=1",
+                                UInt8[0x32, 0x00, 0xff],
+                            ),
+                            (
+                                :blob_client,
+                                "UPDATE messages SET client_message_id=? WHERE id=$(plain.id)",
+                                UInt8[0x41, 0x00, 0xff],
+                            ),
+                            (
+                                :blob_room,
+                                "UPDATE rooms SET name=? WHERE id=1",
+                                UInt8[0x41, 0x00, 0xff],
+                            ),
+                            (
+                                :blob_body,
+                                "UPDATE action_text_rich_texts SET body=? WHERE record_type='Message' AND record_id=$(plain.id)",
+                                UInt8[0x41, 0x00, 0xff],
+                            ),
+                            (
+                                :integer_search,
+                                "UPDATE message_search_index SET body=? WHERE rowid=$(plain.id)",
+                                Int64(42),
+                            ),
+                            (
+                                :fractional_search,
+                                "UPDATE message_search_index SET body=? WHERE rowid=$(plain.id)",
+                                1.5,
+                            ),
+                            (
+                                :blob_search,
+                                "UPDATE message_search_index SET body=? WHERE rowid=$(plain.id)",
+                                UInt8[0x41, 0x00, 0xff],
+                            ),
+                            (
+                                :serialized_search,
+                                "UPDATE message_search_index SET body=? WHERE rowid=$(plain.id)",
+                                SQLite.sqlserialize("serialized ☕"),
+                            ),
+                        )
+                            W.execute!(app, "SAVEPOINT native_message_conversion")
+                            try
+                                W.execute!(app, sql, (value,))
+                                expected = outcome(
+                                    () -> W.query_created_message_row(app, plain.id),
+                                )
+                                actual =
+                                    outcome(() -> W.get_created_message_row(app, plain.id))
+                                @test isequal(actual, expected)
+                                if scenario == :fractional_role
+                                    @test expected.error === InexactError
+                                elseif scenario == :serialized_role
+                                    @test expected.error === nothing
+                                    @test expected.value.author_role == 2
+                                elseif scenario in (:null_body, :null_search)
+                                    @test expected.error === nothing
+                                end
+                            finally
+                                W.execute!(app, "ROLLBACK TO native_message_conversion")
+                                W.execute!(app, "RELEASE native_message_conversion")
+                            end
+                            # Conversion failures and fallback reads must leave
+                            # the cached statement ready for a canonical row.
+                            @test isequal(
+                                W.get_created_message_row(app, plain.id),
+                                canonical,
+                            )
+                        end
+                    end
+
                     W.execute!(app, "SAVEPOINT aborted_creation")
                     aborted = check_created(create_context("Roll back", "aborted"))
                     W.execute!(app, "ROLLBACK TO aborted_creation")
