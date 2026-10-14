@@ -566,6 +566,19 @@ WHERE m.id=? AND m.room_id=? AND m.creator_id=?
     end
 end
 
+function message_push_badge(app, user_id::Int64)
+    statement = prepared_statement(
+        app,
+        "SELECT count(*) FROM memberships WHERE user_id = ? AND unread_at IS NOT NULL AND involvement != 'invisible'",
+    )
+    return with_statement(statement, (user_id,)) do handle, status
+        status == SQLite.C.SQLITE_ROW &&
+        SQLite.C.sqlite3_column_type(handle, 0) == SQLite.C.SQLITE_INTEGER ||
+            throw(SQLite.SQLiteException("Push badge count must be an integer"))
+        return SQLite.C.sqlite3_column_int64(handle, 0)
+    end
+end
+
 function message_push_snapshot(app, message_id)
     return lock(app.lock) do
         # Select current recipients before loading a body or preparing a payload.
@@ -595,11 +608,7 @@ function message_push_snapshot(app, message_id)
         # Capture counts in recipient order while the writer lock is held. All
         # strings in this snapshot are already copied by SQLite.jl.
         badges = Int64[
-            scalar(
-                app,
-                "SELECT count(*) FROM memberships WHERE user_id = ? AND unread_at IS NOT NULL AND involvement != 'invisible'",
-                (subscription.user_id,),
-            ) for subscription in subscriptions
+            message_push_badge(app, subscription.user_id) for subscription in subscriptions
         ]
         return (; message, subscriptions, badges)
     end

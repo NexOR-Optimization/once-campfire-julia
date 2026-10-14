@@ -298,6 +298,63 @@ end
                 @test isempty(
                     PushWeb.message_push_deliveries(app, 999, "https://campfire.test"),
                 )
+                @testset "Typed push badge counts preserve current unread state" begin
+                    PushWeb.execute!(app, "SAVEPOINT push_badge_regressions")
+                    try
+                        @test (@inferred PushWeb.message_push_badge(app, Int64(999))) ===
+                              Int64(0)
+                        @test (@inferred PushWeb.message_push_badge(app, Int64(2))) ===
+                              Int64(1)
+                        for (room, involvement, unread) in (
+                            (2, "invisible", timestamp),
+                            (3, "everything", nothing),
+                            (4, "nothing", timestamp),
+                        )
+                            PushWeb.execute!(
+                                app,
+                                "INSERT INTO rooms(id,name,type,creator_id,created_at,updated_at) VALUES(?,'Badge room','Rooms::Open',1,?,?)",
+                                (room, timestamp, timestamp),
+                            )
+                            PushWeb.execute!(
+                                app,
+                                "INSERT INTO memberships(room_id,user_id,involvement,unread_at,created_at,updated_at) VALUES(?,2,?,?,?,?)",
+                                (room, involvement, unread, timestamp, timestamp),
+                            )
+                        end
+                        @test PushWeb.message_push_badge(app, Int64(2)) === Int64(2)
+                        # Both APIs reuse the same cached statement. Alternating
+                        # user IDs must replace bindings in either direction.
+                        count_sql = "SELECT count(*) FROM memberships WHERE user_id = ? AND unread_at IS NOT NULL AND involvement != 'invisible'"
+                        @test PushWeb.scalar(app, count_sql, (Int64(999),)) == 0
+                        @test PushWeb.message_push_badge(app, Int64(3)) === Int64(1)
+                        @test PushWeb.scalar(app, count_sql, (Int64(2),)) == 2
+                        @test PushWeb.message_push_badge(app, Int64(999)) === Int64(0)
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET involvement='nothing' WHERE user_id=2 AND room_id=2",
+                        )
+                        @test PushWeb.message_push_badge(app, Int64(2)) === Int64(3)
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET unread_at=NULL WHERE user_id=2 AND room_id=1",
+                        )
+                        @test PushWeb.message_push_badge(app, Int64(2)) === Int64(2)
+                        PushWeb.execute!(
+                            app,
+                            "DELETE FROM memberships WHERE user_id=2 AND room_id=4",
+                        )
+                        @test PushWeb.message_push_badge(app, Int64(2)) === Int64(1)
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE memberships SET unread_at=NULL WHERE user_id=2",
+                        )
+                        @test PushWeb.message_push_badge(app, Int64(2)) === Int64(0)
+                        @test PushWeb.message_push_badge(app, Int64(3)) === Int64(1)
+                    finally
+                        PushWeb.execute!(app, "ROLLBACK TO push_badge_regressions")
+                        PushWeb.execute!(app, "RELEASE push_badge_regressions")
+                    end
+                end
                 @testset "Fixed push projections preserve fields and owned text" begin
                     PushWeb.execute!(app, "SAVEPOINT push_projection_regressions")
                     try

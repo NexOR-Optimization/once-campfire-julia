@@ -164,7 +164,7 @@ end
 function with_statement(
     f::F,
     statement::SQLite.Stmt,
-    parameters::Tuple{Vararg{AbstractString}} = (),
+    parameters::Tuple{Vararg{Union{AbstractString,Int64}}} = (),
 ) where {F}
     handle = statement_handle(statement)
     GC.@preserve statement begin
@@ -174,15 +174,19 @@ function with_statement(
                 throw(SQLite.SQLiteException("values required for every SQL placeholder"))
             for index in eachindex(parameters)
                 value = parameters[index]
-                # Other AbstractStrings may use a different code-unit encoding.
-                value isa Union{String,SubString{String}} || (value = String(value))
-                status = SQLite.C.sqlite3_bind_text(
-                    handle,
-                    index,
-                    value,
-                    ncodeunits(value),
-                    SQLite.C.SQLITE_TRANSIENT,
-                )
+                status = if value isa Int64
+                    SQLite.C.sqlite3_bind_int64(handle, index, value)
+                else
+                    # Other AbstractStrings may use a different code-unit encoding.
+                    value isa Union{String,SubString{String}} || (value = String(value))
+                    SQLite.C.sqlite3_bind_text(
+                        handle,
+                        index,
+                        value,
+                        ncodeunits(value),
+                        SQLite.C.SQLITE_TRANSIENT,
+                    )
+                end
                 status == SQLite.C.SQLITE_OK || throw(SQLite.sqliteexception(statement.db))
             end
             status = SQLite.C.sqlite3_step(handle)

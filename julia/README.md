@@ -179,6 +179,92 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Typed push badge counts and fresh C comparison, 2026-10-14
+
+Each push subscription still gets its own fresh unread-room count under the
+writer lock. A dedicated `message_push_badge` now binds the user ID as `Int64`
+and reads the integer result through SQLite.jl's existing native API, skipping
+the generic query wrapper and column metadata. The shared statement helper now
+accepts `Int64` alongside strings; statement ownership, reset/clear on errors,
+SQL, recipient order, permissions and notification payloads are preserved.
+No new dependency, batching, cache or default durability change is involved.
+
+The paired Julia-before/after comparison keeps both builds at SQLite `FULL`:
+
+| Route | Baseline req/s | Candidate req/s | Baseline p99 | Candidate p99 |
+|---|---:|---:|---:|---:|
+| POST message | 4,331.4 | 4,494.9 | 11.223 ms | 11.191 ms |
+| Cached room | 77,626.8 | 79,426.9 | 0.757 ms | 0.685 ms |
+
+POST medians differ by +3.77%, but individual pairs are −5.19%, +1.49% and
++9.88%, while the unchanged cached-read control also rises 2.32%. This is noisy
+full-server evidence, not an established 3.77% speedup from the badge change.
+
+A separate fresh comparison uses SQLite `NORMAL` for both pinned C and the
+Julia candidate:
+
+| Route | C req/s | Julia req/s | C p99 | Julia p99 |
+|---|---:|---:|---:|---:|
+| POST message | 4,782.5 | 4,715.4 | 4.407 ms | 10.695 ms |
+| Cached room | 106,302.5 | 80,413.1 | 0.321 ms | 0.667 ms |
+
+Julia reaches 98.60% of C's median POST throughput and 75.65% of its cached-read
+throughput. POST throughput is close; tail latency and memory remain substantial
+gaps. Maximum container-lifetime memory peaks for POST runs are 123.1 MiB for C
+and 1,909.7 MiB for Julia, including startup and warmup. These peaks are not
+per-request allocations or steady-state live-memory measurements.
+
+In the isolated component diagnostic, the badge query drops from 896 to **zero
+Julia-allocated bytes** and from 1.881 to 1.264 µs (−32.8%), with its inferred
+return type narrowing from `Any` to `Int64`. Complete preparation of three
+notifications falls from 20,720 to 18,032 bytes (−13.0%) and from 34.596 to
+32.820 µs (−5.1%). Payload hashes match exactly. Instrumented uncontended writer
+lock hold time falls from 34.476 to 31.955 µs (−7.3%). Each image runs seven
+warmed batches in a separate process; these are component measurements, not
+full-server speedups. Julia allocation counters exclude SQLite/native memory.
+
+A separate instrumented Julia diagnostic pair finds mean push lock hold time
+50.683→48.370 µs and enqueue-to-finish p99 15.946→15.687 ms. All 230,152 warmup
+and timed jobs complete successfully and match acknowledged message IDs, each
+with one preparation lock and three real sender calls rejected by the existing
+local-address guard. No provider requests occur. Peak unfinished timed jobs
+remain 34 in each build, with none unfinished when the stop marker is observed.
+This checks completion of the local benchmark workload; it does not measure
+external push delivery, and the single instrumented pair is not throughput proof.
+
+Both throughput comparisons use three alternating rounds on fresh copies of
+the same fixture, ten seconds of warmup at four clients and fifteen seconds
+at 16 clients per route. GC stays enabled. The server uses CPUs `0,2,4,6`,
+the load generator `8,10,12,14`; gzip and 64 MiB response caches remain enabled.
+Julia uses four default threads plus one interactive thread. C uses its pinned
+build with four HTTP loops and four readers. Only the cached room and POST
+routes were rerun; this is not a new full-route or mixed-writer comparison. Databases live on
+`/tmp` tmpfs, so these results do not establish durable-disk synchronization
+costs. Latencies are medians of per-run p99s, not pooled percentiles.
+
+The refreshed baseline POST profile still places samples in the generic badge
+query path; those inclusive samples are diagnostic, not predicted speedups.
+The modified SQLite and push test files pass 88 and 189 assertions respectively
+in `--project=test`, including exact large integers, mixed string/integer
+bindings, forced GC, error recovery and fresh badge state. All six temporary
+line/type coverage probes hit and were removed. The formatted source passes
+the same 277 assertions and the unchanged Chromium smoke test. JuliaFormatter
+2.14's second pass is unchanged.
+
+The two throughput comparisons validate 24,107,116 responses including warmup,
+with zero errors or invalid responses. Independent read-only audits verify all
+1,327,888 acknowledged writes across twelve databases against exact message IDs,
+rooms, bodies and FTS entries; integrity checks pass and database/WAL hashes are
+unchanged by those audits.
+
+Julia baseline is `24db0b7` (`campfire-julia:push-snapshot`); the candidate image
+is `campfire-julia:badge-count`. C remains at `873a51f`, using the same pinned
+image as the earlier comparison, now measured again. Raw samples, receipts,
+source/image hashes, component and completion diagnostics, tests and the
+precommit patch are retained under
+`tmp/julia-full-server/2026-10-14-badge-count/` (ignored by Git). Runtime
+databases, storage and credentials are excluded from the evidence archive.
+
 ## Push payloads outside the writer lock, 2026-10-13
 
 Push jobs now capture owned message text, eligible subscriptions and an aligned
