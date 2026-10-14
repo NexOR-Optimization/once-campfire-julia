@@ -179,6 +179,61 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Refreshed matched C comparison, 2026-10-14
+
+A fresh comparison of Julia `e07808a` against the same pinned C `873a51f`
+build sets both SQLite writers to `NORMAL`:
+
+| Route | C req/s | Julia req/s | C p99 | Julia p99 |
+|---|---:|---:|---:|---:|
+| POST message | 4,716.8 | 5,489.7 | 4.571 ms | 9.223 ms |
+| Cached room | 100,981.8 | 81,108.1 | 0.325 ms | 0.647 ms |
+
+Julia leads this POST workload by 16.39% at the median, with paired leads of
+17.81%, 12.11% and 21.10%. It reaches 80.32% of C's cached-room throughput.
+C retains roughly half the p99 latency on both routes. Maximum POST container
+lifetime memory peaks are 113.8 MiB for C and 1,181.5 MiB for Julia; these
+include startup, compilation and warmup, rather than measuring steady-state
+resident memory or per-request allocations. This refresh measures the current
+implementations; it does not isolate the effect of an individual optimization.
+
+Three rounds alternate C/Julia, Julia/C and C/Julia on fresh copies of the same
+fixture. Each route gets ten seconds of warmup at four clients, then fifteen
+seconds at 16 clients. Throughput and p99 are medians of the three run values;
+percentiles are not pooled. Server CPUs are `0,2,4,6`, client CPUs `8,10,12,14`.
+The release load generator, response contracts, fixture, host networking, gzip
+and 64 MiB cache budgets are unchanged. Julia has four default threads plus
+one interactive thread, with GC enabled. C has four HTTP loops plus its reader,
+writer and job pools. CPU allocation is matched; total thread counts and
+HTTP/compression implementations differ.
+
+Both implementations use SQLite 3.53.4 from different builds. C applies
+`NORMAL` to all connections; Julia applies it to its writer, with query-only
+reader/observer settings unchanged. Julia's default remains `FULL`; this
+comparison explicitly overrides it to match C's writer durability. Databases
+are on `/tmp` tmpfs, so durable-disk synchronization cost is not measured.
+Push/webhook endpoints retain the benchmark's local rejection/unavailability
+setup. Acknowledged HTTP writes and persistence audits do not establish equal
+background-job completion or external delivery throughput. Only these two
+routes were rerun; Rust, other routes and mixed-writer loads were not refreshed.
+
+All 12,737,411 responses including warmup pass validation with zero errors or
+invalid responses. Independent read-only audits verify all 746,368 acknowledged
+writes across six databases against exact IDs, rooms, rich-text bodies and FTS
+entries, with no extra or missing new messages. Integrity checks pass, and
+database/WAL hashes remain unchanged during the audits.
+
+The Julia image is `campfire-julia:native-push-subscriptions`
+(`sha256:c5c0e2d8aa29…`); C is `campfire-c:local` (`sha256:820f3ef4f63e…`).
+Julia's image/source match and both clean source revisions are checked. C's
+image executable matches the retained optimized build and its startup script
+matches the pinned source; C was not rebuilt for this refresh. Raw results,
+receipts, source snapshots, complete hashes, launch settings and independent
+audits are retained under `tmp/julia-full-server/2026-10-14-matched-c-refresh/`
+(ignored by Git). The archive excludes runtime databases, storage and
+credentials. This is a documentation/measurement update; the earlier focused
+Julia tests, formatting and browser checks are referenced, not rerun.
+
 ## Direct decoding of push subscriptions, 2026-10-14
 
 Push subscription selection now copies fixed rows directly from the prepared
