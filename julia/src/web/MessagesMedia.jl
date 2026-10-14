@@ -859,6 +859,22 @@ function message_stream(action, target, content = "")
     return "<turbo-stream action=\"$action\" target=\"$(media_escape(target))\"><template>$content</template></turbo-stream>"
 end
 
+function message_stream(action, target, ctx, row)
+    # Reserve the stream envelope in addition to the message rendering allowance.
+    io = IOBuffer(sizehint = 6144 + 128)
+    print(
+        io,
+        "<turbo-stream action=\"",
+        action,
+        "\" target=\"",
+        media_escape(target),
+        "\"><template>",
+    )
+    message_html(io, ctx, row)
+    print(io, "</template></turbo-stream>")
+    return String(take!(io))
+end
+
 messages_target(room) = "messages_room_$(room isa Integer ? room : room.id)"
 
 function stream_response(body; status = 200)
@@ -946,7 +962,7 @@ VALUES('body','Message',?,?,?,?)
     )
     message = upload isa UploadedFile ? get_message(ctx, id) : get_created_message(ctx, id)
     touch_message_room!(ctx, message; created = true)
-    stream = message_stream("append", messages_target(room), message_html(ctx, message))
+    stream = message_stream("append", messages_target(room), ctx, message)
     broadcast_room!(ctx, room, stream)
     created_at = datetime2unix(DateTime(replace(message.created_at, ' '=>'T')))
     push!(ctx.events, Event(:unread, room, (roomId = room, at = created_at)))
@@ -1170,7 +1186,7 @@ ON CONFLICT(record_type,record_id,name) DO UPDATE SET body=excluded.body,updated
     broadcast_room!(
         ctx,
         message.room_id,
-        message_stream("replace", "message_$(message.id)", message_html(ctx, message)),
+        message_stream("replace", "message_$(message.id)", ctx, message),
     )
     return bot ? json_response(message_json(ctx, message)) :
            redirect("/rooms/$(message.room_id)/messages/$(message.id)")

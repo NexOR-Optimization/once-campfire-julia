@@ -787,6 +787,127 @@ END
                     @test W.get_created_message_row(app, -1) === nothing
                     @test W.get_created_message(context("GET", "/"), -1) === nothing
 
+                    @testset "Message stream bytes and buffer ownership" begin
+                        render_ctx = context("GET", "/")
+                        target = "messages_\"&<>'☕"
+                        small = W.message_stream("append", target, render_ctx, plain)
+                        @test startswith(
+                            small,
+                            "<turbo-stream action=\"append\" target=\"messages_&quot;&amp;&lt;&gt;&#39;☕\"><template>",
+                        )
+                        large =
+                            merge(plain, (body = repeat("<b>☕ &amp; Julia</b>", 2000),))
+                        large_stream =
+                            W.message_stream("replace", target, render_ctx, large)
+                        @test ncodeunits(large_stream) > 6272
+                        # The message fits its usual allowance, but its stream
+                        # crosses that boundary once the envelope is included.
+                        empty_body = merge(plain, (body = "",))
+                        body_bytes =
+                            6144 - 32 - ncodeunits(W.message_html(render_ctx, empty_body))
+                        boundary = merge(empty_body, (body = repeat("x", body_bytes),))
+                        boundary_html = W.message_html(render_ctx, boundary)
+                        boundary_target = W.messages_target(plain.room_id)
+                        expected_boundary =
+                            W.message_stream("append", boundary_target, boundary_html)
+                        @test ncodeunits(boundary_html) < 6144
+                        @test ncodeunits(expected_boundary) > 6144
+                        @test W.message_stream(
+                            "append",
+                            boundary_target,
+                            render_ctx,
+                            boundary,
+                        ) == expected_boundary
+                        for message in (
+                            plain,
+                            sound,
+                            mentioned,
+                            forged,
+                            robot,
+                            attached,
+                            unnamed,
+                            persisted,
+                            boosted,
+                            linked,
+                            photo,
+                            damaged,
+                            video,
+                            large,
+                        )
+                            for action in ("append", "replace")
+                                @test W.message_stream(
+                                    action,
+                                    target,
+                                    render_ctx,
+                                    message,
+                                ) == W.message_stream(
+                                    action,
+                                    target,
+                                    W.message_html(render_ctx, message),
+                                )
+                            end
+                        end
+                        # Later renders may grow their own buffers, but cannot
+                        # reuse storage belonging to either earlier result.
+                        @test small == W.message_stream(
+                            "append",
+                            target,
+                            W.message_html(render_ctx, plain),
+                        )
+                        @test large_stream == W.message_stream(
+                            "replace",
+                            target,
+                            W.message_html(render_ctx, large),
+                        )
+                        for (action, target) in (
+                            ("append", ""),
+                            ("replace", SubString("target_λ", 8)),
+                            ("raw\"&", 7),
+                        )
+                            @test W.message_stream(action, target, render_ctx, plain) ==
+                                  W.message_stream(
+                                action,
+                                target,
+                                W.message_html(render_ctx, plain),
+                            )
+                        end
+                    end
+
+                    @testset "Updated streams retain transaction and event behavior" begin
+                        before_update = W.get_message(context("GET", "/"), plain.id)
+                        W.execute!(app, "SAVEPOINT stream_update")
+                        try
+                            update_ctx = context(
+                                "PATCH",
+                                "/rooms/1/messages/$(plain.id)";
+                                parameters = Dict(
+                                    "message[body]" => "Edited <b>stream ☕</b>",
+                                ),
+                            )
+                            response = W.route_messages(update_ctx)
+                            @test response.status == 303
+                            @test HTTP.header(response, "Location") ==
+                                  "/rooms/1/messages/$(plain.id)"
+                            updated = W.get_message(update_ctx, plain.id)
+                            event = only(update_ctx.events)
+                            @test event.kind == :room && event.id == 1
+                            @test event.payload == W.message_stream(
+                                "replace",
+                                "message_$(plain.id)",
+                                W.message_html(update_ctx, updated),
+                            )
+                            @test updated.body == "Edited <b>stream ☕</b>"
+                            @test updated.plain_text == "Edited stream ☕"
+                        finally
+                            W.execute!(app, "ROLLBACK TO stream_update")
+                            W.execute!(app, "RELEASE stream_update")
+                        end
+                        @test isequal(
+                            W.get_message(context("GET", "/"), plain.id),
+                            before_update,
+                        )
+                    end
+
                     W.execute!(app, "SAVEPOINT projected_message_fields")
                     try
                         # Every read sees current persisted fields. Earlier rows

@@ -179,6 +179,75 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Message streams in one buffer, 2026-10-14
+
+Message creation and editing now write the Turbo Stream envelope and existing
+`message_html(io, ctx, row)` output into one owned buffer. This removes the
+intermediate complete HTML string and its copy into the stream. The buffer adds
+128 bytes for the normal append/replace envelope to the renderer's existing
+6,144-byte allowance, avoiding extra growth near that boundary. Rendering stays
+at the same point inside the transaction, before events are published. The
+existing standalone HTML and generic stream helpers remain available.
+
+An isolated rendering diagnostic compares the unchanged nested composition with
+the new writer in the same Julia 1.13.1 process:
+
+| Rendered stream | Old time | New time | Old Julia bytes | New Julia bytes |
+|---|---:|---:|---:|---:|
+| Typical, 4,855 bytes | 6.285 µs | 5.675 µs | 16,560 | 11,760 |
+| Near buffer limit, 6,190 bytes | 6.487 µs | 5.797 µs | 17,904 | 11,760 |
+| Large Unicode, 100,759 bytes | 52.935 µs | 30.455 µs | 274,448 | 173,840 |
+
+Typical rendering is 9.7% faster with 29.0% fewer Julia allocation bytes. All
+12 measured cases improve in this diagnostic and preserve exact append/replace
+output. Seven warmed rounds alternate old/new order, with GC enabled, one
+thread on CPU 0, and owned hydrated rows prepared before timing. Only append is
+timed; SQL, transaction commit, HTTP, compression and push work are excluded.
+These component improvements do not establish a full-server speedup. Native
+allocation bytes are excluded. The initial 6,144-byte-hint experiment and its
+boundary allocation regression are preserved alongside the corrected result.
+
+The full-server before/after comparison reports:
+
+| Route | Baseline req/s | Candidate req/s | Baseline p99 | Candidate p99 |
+|---|---:|---:|---:|---:|
+| POST message | 4,423.0 | 4,502.4 | 11.631 ms | 11.319 ms |
+| Cached room | 76,619.9 | 77,622.7 | 0.683 ms | 0.693 ms |
+
+POST throughput rises in all three pairs: +1.80%, +5.85% and +0.33%; the median
+rises 1.80%. The unchanged cached-read control also rises 1.31%, and POST p99
+is slightly worse in the third pair. This is a modest, noisy server gain, with
+clearer evidence for the isolated allocation reduction. Maximum POST container
+lifetime memory peaks rise from 1,294.4 to 1,442.5 MiB, including startup and
+warmup; fewer rendering allocations do not establish lower resident memory.
+
+The full-server comparison uses three alternating rounds against `3c64c0b`,
+with SQLite `FULL` in both builds, ten seconds of warmup at four clients and
+fifteen seconds at 16 clients. The same fixture, unchanged release load
+generator and response contracts, gzip, 64 MiB cache and GC are retained. Julia
+uses four worker threads and one interactive thread, with server CPUs `0,2,4,6`
+and client CPUs `8,10,12,14`. Databases are on `/tmp` tmpfs. Cached room reads
+are a control; other routes, C and Rust were not rerun for this step. The badge-count section records the previous step's
+fresh matched C comparison. Latencies are medians of per-run p99 values.
+
+The modified message/media test file passes 339 assertions in `--project=test`
+after formatting. Coverage probes hit both changed call sites and the capacity
+boundary, then were removed. Exact stream bytes, target escaping, owned output,
+attachments, sounds, mentions, boosts, edit events and rollback behavior are
+covered. JuliaFormatter 2.14's second pass is unchanged, and the unchanged
+Chromium smoke test passes against the candidate image.
+
+All 10,996,935 benchmark responses including warmup pass validation with zero
+errors or invalid responses. Independent read-only audits verify all 642,608
+acknowledged writes across six databases against exact IDs, rooms, bodies and
+FTS entries. Integrity checks pass and database/WAL hashes stay unchanged.
+
+The baseline image is `campfire-julia:badge-count`; the candidate is
+`campfire-julia:stream-buffer`. Source/image hashes, paired raw results,
+receipts, component measurements, focused tests and precommit diff are retained
+under `tmp/julia-full-server/2026-10-14-stream-buffer/` (ignored by Git).
+The evidence archive excludes runtime databases, storage and credentials.
+
 ## Typed push badge counts and fresh C comparison, 2026-10-14
 
 Each push subscription still gets its own fresh unread-room count under the
