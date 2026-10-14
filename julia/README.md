@@ -35,7 +35,7 @@ Configuration:
 | `DATABASE_SYNCHRONOUS` | `FULL`; optionally `NORMAL` for SQLite WAL writes, with the durability tradeoff below |
 | `PORT` | `3001`, overridden by the second positional argument |
 | `CAMPFIRE_HOST` | `127.0.0.1` |
-| `JULIA_NUM_THREADS` | Julia thread pools; use `4,1` for four workers and one I/O thread (Docker defaults to `auto`) |
+| `JULIA_NUM_THREADS` | Julia thread pools; `4,1` means four workers and one I/O thread (Docker defaults to `auto`); see the four-CPU `2,2` measurements below |
 | `CAMPFIRE_ORIGIN` | Canonical public origin; set this to the HTTPS URL behind a proxy |
 | `STORAGE_PATH` | `storage/` beside the database |
 | `SECRET_KEY_BASE` | Generated and persisted with mode 0600 if absent |
@@ -56,8 +56,8 @@ system crash. SQLite documents this distinction for
 Only `FULL` and `NORMAL` are accepted; ordinary process crashes retain committed
 transactions with either setting.
 
-HTTP socket I/O and parsing stay on one interactive thread. Application requests
-run on the default worker pool. Room, message, sidebar and search GETs borrow
+HTTP socket I/O and parsing run on the interactive thread pool. Application
+requests run on the default worker pool. Room, message, sidebar and search GETs borrow
 exclusive SQLite readers, with up to four readers by default when
 multiple workers are available. Each reader owns its prepared statements,
 observer connection and response cache shard. The shards share a total limit of
@@ -116,6 +116,7 @@ julia --project=test test/julia_web_views.jl
 julia --project=test test/julia_web_server.jl
 julia --threads=4,1 --project=test test/julia_web_readers.jl
 julia --threads=4,1 --project=test test/julia_web_transport.jl
+julia --threads=2,2 --project=test test/julia_web_transport.jl
 julia --threads=4,1 --project=test test/julia_web_media.jl
 julia --project=test test/julia_web_cable.jl
 julia --project=test test/julia_web_unfurl.jl
@@ -178,6 +179,121 @@ infrastructure and compatibility code themselves, while Julia delegates several
 corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
+
+## Two I/O threads on four CPUs, 2026-10-14
+
+Changing `JULIA_NUM_THREADS=4,1` to `2,2` closes the measured cached-room gap
+without changing Julia's executable or application source. The same image now
+uses two application workers and two interactive I/O threads on four allocated
+CPUs. GC remains enabled. Three rotating rounds give these medians:
+
+| Route | C req/s | Julia `4,1` req/s | Julia `2,2` req/s | C p99 | Julia `4,1` p99 | Julia `2,2` p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| Cached room | 98,605.9 | 81,190.9 | 102,818.6 | 0.347 ms | 0.654 ms | 0.250 ms |
+| POST message | 4,648.0 | 5,509.3 | 6,198.8 | 4.583 ms | 9.191 ms | 11.047 ms |
+
+Cached-room throughput improves **26.64%**, with paired gains of 28.60%, 26.45%
+and 23.13%. Julia reaches 104.27% of C's median throughput. Its individual runs
+range from 99,967.3 to 104,273.7 req/s; C wins the third round by about 0.8%.
+This supports roughly C-level throughput for this workload, with a small median
+lead. Julia's cached-room p99 improves 61.77% relative to `4,1`.
+
+The write tradeoff matters: POST throughput improves 12.52%, but p99 worsens
+20.19%. C retains substantially lower POST p99. Maximum POST container lifetime
+memory peaks are 111.4 MiB for C, 1,260.6 MiB for Julia `4,1`, and 1,354.5 MiB
+for Julia `2,2`. These include startup, compilation, warmup and different numbers
+of persisted messages; they are not steady-state RSS or per-request allocation
+measurements. Treat `2,2` as a measured four-CPU tuning option. Docker's thread
+default remains unchanged. To select this split when starting a server:
+
+```sh
+JULIA_NUM_THREADS=2,2 julia/bin/campfire /tmp/campfire-julia/production.sqlite3 3001
+```
+
+This command retains the default `FULL` writer durability. The comparison
+explicitly sets Julia's writers to `NORMAL` to match C. C sets all connections
+to `NORMAL`; Julia's query-only reader/observer settings are unchanged. Both
+use SQLite 3.53.4 from different builds, with disposable databases on tmpfs.
+Durable-disk synchronization cost and real-provider notification delivery are
+not measured. HTTP write audits do not establish equal background-job completion.
+
+This is a combined thread-pool configuration change: Julia reports four versus
+two GC threads, and the application automatically creates four versus two
+exclusive readers/cache shards. The total cache budget remains 64 MiB. It does
+not isolate the contribution of the I/O threads, worker scheduling, GC or reader
+partitioning. A separate two-round pilot tried `4,1`, `3,1`, `3,2` and `2,2`,
+then repeated `4,1`; it selected `2,2` for this fresh three-round comparison.
+Pilot samples are excluded from the table above.
+
+The final rounds rotate C/baseline/tuned, baseline/tuned/C and tuned/C/baseline.
+Each route gets ten seconds of warmup at four clients and fifteen measured
+seconds at 16 clients. Server CPUs are `0,2,4,6`; client CPUs are `8,10,12,14`.
+The fixture, gzip, host networking, cache budgets and response contracts match.
+C retains four HTTP loops plus its reader, writer and job pools; CPU allocation
+is matched, not total thread count. Throughput and p99 are medians of three
+per-run values, not pooled percentiles. Rust, other routes and mixed writes
+were not rerun.
+
+All 20,144,571 responses including warmup validate with zero errors or invalid
+responses. Independent read-only audits verify all 1,175,872 acknowledged writes
+across nine databases, including exact message IDs, rooms, rich-text and FTS
+bodies, no extra writes, integrity checks and unchanged database/WAL hashes.
+The modified transport test passes 206 assertions under `--threads=2,2`, with
+temporary coverage probes confirming distinct I/O threads, worker dispatch,
+private buffers through delayed writes, reuse and graceful shutdown. The
+unchanged Chromium smoke test passes. JuliaFormatter 2.14's second pass is
+unchanged; no production source changed.
+
+Both Julia configurations use image `sha256:c5c0e2d8aa29…`, runtime digest
+`7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a`, based on
+`bcd4baa`. C remains `873a51f`, image `sha256:820f3ef4f63e…`. Image/source checks,
+raw results, receipts, launch scripts, selected topology, completed pilot,
+focused tests and browser evidence are retained under
+`tmp/julia-full-server/2026-10-14-io-topology/` (ignored by Git), excluding
+runtime databases, storage and credentials.
+
+## Cached-header experiment, not retained, 2026-10-14
+
+A candidate stored separate validated plain/gzip header templates in each
+cached page and copied the selected template per response. It preserved header
+order, duplicate fields, response ownership and authorization, and charged the
+extra templates to the cache budget. The isolated gzip response helper, including
+security headers, fell from 1,328 to 464 Julia-allocated bytes and from 0.316 to
+0.160 µs across seven alternating warmed rounds. This excludes HTTP parsing,
+database checks, worker dispatch and socket I/O.
+
+That saving did not improve full-server cached-room throughput:
+
+| Route | C req/s | Julia baseline req/s | Header candidate req/s | Baseline p99 | Candidate p99 |
+|---|---:|---:|---:|---:|---:|
+| Cached room | 103,836.3 | 81,137.1 | 80,472.3 | 0.653 ms | 0.663 ms |
+| POST message | 4,688.3 | 5,581.4 | 5,567.0 | 9.071 ms | 8.999 ms |
+
+The cached-room median changes −0.82%; individual paired changes are −0.74%,
+−1.50% and +0.24%. The candidate is not retained. Lower allocation in one helper
+does not establish a server throughput gain.
+
+Three rounds rotate C/baseline/candidate, baseline/candidate/C and
+candidate/C/baseline. All writers use `NORMAL`, with the same fixture, gzip,
+64 MiB cache budgets, server CPUs `0,2,4,6`, client CPUs `8,10,12,14`, ten seconds
+of warmup at four clients and fifteen seconds at 16 clients per route. Julia
+uses four default threads plus one interactive thread and GC stays enabled.
+Databases are on tmpfs; external notification delivery is not measured.
+Throughput and p99 are medians of per-run values, not pooled percentiles.
+
+All 18,703,362 responses including warmup validate with zero errors. Independent
+read-only audits verify all 1,133,860 acknowledged writes across nine databases,
+including exact message IDs, rooms, rich-text and FTS bodies, integrity checks
+and unchanged database/WAL hashes. The candidate passed 386 focused assertions,
+temporary line/type coverage probes, JuliaFormatter 2.14's unchanged second
+pass and the unchanged Chromium smoke test before measurement.
+
+The baseline is `bcd4baa` using the previously pinned Julia image; the discarded
+candidate image is `sha256:4704a7948358…`. C remains the pinned `873a51f` build.
+Candidate sources, patch, full hashes, profiles, component measurements, raw
+results, receipts and validation evidence are retained under
+`tmp/julia-full-server/2026-10-14-cached-headers/` (ignored by Git), excluding
+runtime databases, storage and credentials.
 
 ## Refreshed matched C comparison, 2026-10-14
 

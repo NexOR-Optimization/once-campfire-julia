@@ -115,37 +115,106 @@ end
         @test prepared.wire.maxsize == W.MAX_COALESCED_RESPONSE_BYTES
     end
 
-    # Parent connection tasks each keep their own holder. Their workers overlap,
-    # but receive that holder explicitly instead of reading worker-task storage.
-    holders = Channel{W.ResponseScratch}(2)
+    # Each connection lends its holder to an awaited worker. Concurrent I/O
+    # threads must retain separate holders even when another connection reuses
+    # its buffer while a socket write is still waiting for completion.
+    holders = Channel{Any}(2)
     entered = Channel{Nothing}(2)
     release = Channel{Nothing}(2)
+    rendezvous = Threads.Atomic{Int}(0)
+    pending =
+        [TransportGatedIO(IOBuffer(), Channel{Nothing}(1), Channel{Nothing}(1)) for _ = 1:2]
     connections = [
         Threads.@spawn :interactive begin
             local holder = W.response_scratch()
-            local same_holder = holder === W.response_scratch()
-            put!(holders, holder)
-            local prepared = W.request_on_worker(holder, index) do holder, index
-                put!(entered, nothing)
-                take!(release)
-                local request = HTTP.Request("GET", "/")
-                local response = HTTP.Response(200, "connection $index")
-                return W.prepare_response(request, response, holder)
+            local io_thread = Threads.threadid()
+            local io_pool = Threads.threadpool()
+            if Threads.nthreads(:interactive) > 1
+                # This bounded rendezvous requires two threads to run without
+                # fixing either task to a thread or assuming it cannot migrate.
+                Threads.atomic_add!(rendezvous, 1)
+                local deadline = time_ns() + UInt64(2_000_000_000)
+                while rendezvous[] < 2 && time_ns() < deadline
+                end
             end
-            return (; same_holder, holder, prepared)
+            put!(holders, (; holder, io_thread, io_pool))
+            local body = repeat("connection $index λ\0", index * 100)
+            local request = HTTP.Request("GET", "/")
+            local stream =
+                HTTP.Stream(request, HTTP.Connections.Connection(pending[index]))
+            local prepared, worker_pool =
+                W.request_on_worker(holder, request, body) do holder, request, body
+                    put!(entered, nothing)
+                    take!(release)
+                    local response = HTTP.Response(200, body)
+                    return W.prepare_response(request, response, holder),
+                    Threads.threadpool()
+                end
+            local same_holder = holder === W.response_scratch()
+            local expected = IOBuffer()
+            HTTP.Messages.writeheaders(expected, request.response)
+            write(expected, body)
+            W.write_prepared_response(stream, prepared)
+            local first_bytes = take!(pending[index].output)
+
+            local next_body = "reused connection $index"
+            local next_stream, next_io = transport_response_stream(next_body)
+            local next_prepared = W.request_on_worker(
+                holder,
+                next_stream,
+                next_body,
+            ) do holder, next_stream, next_body
+                return prepare_transport_response(next_stream, next_body, holder)
+            end
+            same_holder &= holder === W.response_scratch()
+            W.write_prepared_response(next_stream, next_prepared)
+            return (;
+                same_holder,
+                holder,
+                prepared,
+                worker_pool,
+                reused = next_prepared.wire === prepared.wire,
+                first_bytes,
+                expected = take!(expected),
+                next_bytes = String(take!(next_io.output)),
+                next_body,
+            )
         end for index = 1:2
     ]
-    first_holder, second_holder = take!(holders), take!(holders)
+    first_owner, second_owner = take!(holders), take!(holders)
     take!(entered)
     take!(entered)
-    @test first_holder !== second_holder
+    @test first_owner.holder !== second_owner.holder
+    io_pool = Threads.nthreads(:interactive) > 0 ? :interactive : :default
+    @test first_owner.io_pool == second_owner.io_pool == io_pool
+    if Threads.nthreads(:interactive) > 1
+        @test first_owner.io_thread != second_owner.io_thread
+    end
     put!(release, nothing)
     put!(release, nothing)
-    first_connection, second_connection = fetch.(connections)
-    @test first_connection.same_holder && second_connection.same_holder
-    @test first_connection.prepared.wire === first_connection.holder.wire
-    @test second_connection.prepared.wire === second_connection.holder.wire
-    @test first_connection.prepared.wire !== second_connection.prepared.wire
+    try
+        take!(pending[1].entered)
+        take!(pending[2].entered)
+        @test all(!istaskdone(task) for task in connections)
+        put!(pending[1].release, nothing)
+        first_connection = fetch(connections[1])
+        @test !istaskdone(connections[2])
+        put!(pending[2].release, nothing)
+        second_connection = fetch(connections[2])
+        @test first_connection.prepared.wire !== second_connection.prepared.wire
+        for connection in (first_connection, second_connection)
+            @test connection.same_holder
+            @test connection.worker_pool == :default
+            @test connection.prepared.wire === connection.holder.wire
+            @test connection.reused
+            @test connection.first_bytes == connection.expected
+            @test endswith(connection.next_bytes, connection.next_body)
+        end
+    finally
+        close(release)
+        foreach(io -> close(io.release), pending)
+        foreach(wait, connections)
+    end
 
     # A socket write can yield. Other connections must not change the bytes
     # referenced by that pending write, and reuse starts only after it returns.
@@ -333,7 +402,10 @@ end
             @test occursin("background-color: green", String(response.body))
             @test isempty(HTTP.request("HEAD", base * "/up"; retry = false).body)
         finally
-            HTTP.forceclose(server)
+            # HEAD headers can reach the client before its handler returns.
+            # Drain the handler before closing its application database.
+            close(server)
+            @test isempty(server.connections)
             close(app)
         end
     end
@@ -498,8 +570,8 @@ end
     active = Threads.Atomic{Int}(0)
     peak = Threads.Atomic{Int}(0)
     shutdowns = Threads.Atomic{Int}(0)
-    response_gate = Channel{Nothing}(1)
-    response_entered = Channel{Nothing}(1)
+    response_gate = [Channel{Nothing}(1) for _ = 1:2]
+    response_entered = Channel{Int}(2)
     peer_observations = Channel{Tuple{String,String}}(3)
     server = W.threaded_listen!(
         socket;
@@ -537,11 +609,12 @@ end
                 end
             after = "$(Threads.threadpool()):$(Threads.threadid())"
             "$before|$result|$after"
-        elseif request.target == "/finish"
-            W.request_on_worker() do
-                put!(response_entered, nothing)
-                take!(response_gate)
-                return "finished"
+        elseif request.target in ("/finish/1", "/finish/2")
+            index = parse(Int, last(split(request.target, '/')))
+            W.request_on_worker(index) do index
+                put!(response_entered, index)
+                take!(response_gate[index])
+                return "finished $index"
             end
         else
             String(read(stream))
@@ -565,7 +638,7 @@ end
             identities = split.(String.(getproperty.(responses, :body)), '|')
             io_pool = Threads.nthreads(:interactive) > 0 ? "interactive:" : "default:"
             @test all(startswith(identity[1], io_pool) for identity in identities)
-            @test all(identity[1] == identity[3] for identity in identities)
+            @test all(startswith(identity[3], io_pool) for identity in identities)
             @test all(startswith(identity[2], "default:") for identity in identities)
             @test length(unique(identity[2] for identity in identities)) > 1
             @test peak[] >= 2
@@ -626,13 +699,16 @@ end
             @test cached_peer == resolved_peer == "127.0.0.1"
         end
 
-        finish = @async HTTP.get(base*"/finish"; retry = false)
-        take!(response_entered)
+        finish = [@async HTTP.get(base*"/finish/$index"; retry = false) for index = 1:2]
+        @test sort([take!(response_entered), take!(response_entered)]) == [1, 2]
         closing = @async close(server)
         @test timedwait(() -> !isopen(server), 5.0) == :ok
         @test !istaskdone(closing)
-        put!(response_gate, nothing)
-        @test String(fetch(finish).body) == "finished"
+        put!(response_gate[1], nothing)
+        @test String(fetch(finish[1]).body) == "finished 1"
+        @test !istaskdone(closing)
+        put!(response_gate[2], nothing)
+        @test String(fetch(finish[2]).body) == "finished 2"
         wait(closing)
         @test shutdowns[] == 1
         @test isempty(server.connections)
