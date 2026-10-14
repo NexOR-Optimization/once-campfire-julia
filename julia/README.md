@@ -179,6 +179,87 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Direct decoding of push subscriptions, 2026-10-14
+
+Push subscription selection now copies fixed rows directly from the prepared
+SQLite statement, avoiding generic query metadata and dynamic field lookup.
+The unchanged query uses `p.*`, so the reader checks all eleven column names
+without allocating name strings, then validates each row's storage types before
+copying it. An unusual schema or value discards every provisional row and uses
+the original decoder for the entire query after statement reset. That reread may
+observe a newer external commit; it reevaluates all recipient predicates and
+retains the existing room/creator check on the subsequent message read.
+
+Strings remain owned after the statement advances or resets, and the existing
+NULL and embedded-NUL behavior is preserved. Multiple devices remain separate
+rows. No ordering guarantee is added to the SQL, which has no `ORDER BY`.
+
+An isolated Julia 1.13.1 diagnostic compares the exact previous helper with the
+new reader on the same SQLite connection:
+
+| Eligible devices | Old time | New time | Old Julia bytes | New Julia bytes |
+|---|---:|---:|---:|---:|
+| None | 6.260 µs | 1.810 µs | 5,360 | 32 |
+| One, nullable fields | 10.068 µs | 2.523 µs | 7,008 | 448 |
+| Two, Unicode fields | 14.098 µs | 3.197 µs | 8,880 | 928 |
+| 32 across 16 users | 124.048 µs | 22.250 µs | 60,200 | 13,560 |
+
+The two-device lookup takes 77.3% less time and allocates 89.5% fewer Julia bytes.
+Seven warmed rounds alternate old/new order on CPU 0 with one thread and GC
+enabled. These loops include selection, row copying and statement cleanup;
+message/badge reads, payload encoding, encryption, delivery, network and HTTP
+are excluded. Native SQLite time is included, but native allocation bytes are
+excluded. Both helpers infer `Vector{PushSubscription}`. Exact values, query
+sequence, eligibility filters and duplicate devices match. Returned strings
+survive statement reuse, GC, external updates and database close. The reader
+runs under the existing writer lock, so reducing this work shortens that lock's
+hold time without changing the lock boundaries.
+
+The full-server before/after comparison reports:
+
+| Route | Baseline req/s | Candidate req/s | Baseline p99 | Candidate p99 |
+|---|---:|---:|---:|---:|
+| POST message | 5,072.5 | 5,571.5 | 9.823 ms | 9.159 ms |
+| Cached room | 81,197.4 | 81,271.8 | 0.656 ms | 0.648 ms |
+
+POST throughput rises 9.84% at the median, with individual paired gains of
+12.58%, 9.52% and 10.51%. Median POST p99 falls 6.76%. The cached-read control
+changes only +0.09%. Maximum POST container lifetime memory peaks are 1,264.6
+versus 1,190.1 MiB; they include startup, compilation and warmup, so they are
+not measurements of steady-state resident memory.
+
+Three alternating rounds compare against `447790f`, with SQLite `FULL` in both
+builds, ten seconds of warmup at four clients and fifteen seconds at 16 clients.
+The fixture, release load generator, response contracts, gzip, 64 MiB cache and
+GC are unchanged. Julia uses four worker threads and one interactive thread;
+server CPUs are `0,2,4,6`, client CPUs `8,10,12,14`. Databases are on `/tmp`
+tmpfs, so durable-disk synchronization cost is not measured. Push endpoints
+retain the benchmark's local rejection setup; external delivery is not measured.
+Latencies are medians of per-run p99 values. Other routes, C and Rust were not
+rerun for this step; the earlier matched C comparison remains in the badge-count
+section.
+
+The focused push test file passes 239 assertions in `--project=test` after
+formatting. Coverage probes exercise native decoding, eight compatibility
+fallbacks and a failure on a subsequent SQLite step, then are removed. Tests
+check complete-list parity, later-row conversion rules, column additions and
+renames, duplicate devices, copied strings and statement reuse after errors.
+JuliaFormatter 2.14's second pass is unchanged, and the unchanged Chromium smoke
+test passes against the candidate image.
+
+All 11,687,945 benchmark responses including warmup pass validation with zero
+errors or invalid responses. Independent read-only audits verify all 753,831
+acknowledged writes across six databases against exact IDs, rooms, rich-text
+bodies and FTS entries. Integrity checks pass and database/WAL hashes remain
+unchanged during the audit.
+
+The baseline image is `campfire-julia:native-message-row`; the candidate is
+`campfire-julia:native-push-subscriptions`. Source/image hashes, raw paired
+results, receipts, component measurements, focused tests and precommit diff are
+retained under `tmp/julia-full-server/2026-10-14-native-push-subscriptions/`
+(ignored by Git). Runtime databases, storage and credentials are excluded from
+the evidence archive.
+
 ## Direct decoding of newly created messages, 2026-10-14
 
 The newly created message reader now bypasses SQLite.jl's generic `Query`/`Row`

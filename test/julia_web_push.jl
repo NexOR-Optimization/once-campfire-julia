@@ -489,6 +489,214 @@ end
                         PushWeb.execute!(app, "RELEASE push_projection_regressions")
                     end
                 end
+                @testset "Native subscription scans preserve whole-query semantics" begin
+                    canonical = @inferred PushWeb.message_push_subscriptions(app, Int64(1))
+                    @test isequal(
+                        canonical,
+                        PushWeb.query_message_push_subscriptions(app, 1),
+                    )
+                    @test (@inferred PushWeb.message_push_subscriptions(app, Int64(999))) ==
+                          PushWeb.PushSubscription[]
+                    for id in (Int32(1), "1", 1.0, nothing)
+                        @test isequal(
+                            PushWeb.message_push_subscriptions(app, id),
+                            PushWeb.query_message_push_subscriptions(app, id),
+                        )
+                    end
+                    function subscription_result(reader)
+                        try
+                            return (; value = reader(app, 1), error_type = nothing)
+                        catch error
+                            return (; value = nothing, error_type = typeof(error))
+                        end
+                    end
+                    PushWeb.execute!(app, "SAVEPOINT native_subscription_rows")
+                    try
+                        # A second device may have the same endpoint and keys;
+                        # retain every row in exactly the query's delivery order.
+                        PushWeb.execute!(
+                            app,
+                            "INSERT INTO push_subscriptions(id,auth_key,created_at,endpoint,p256dh_key,updated_at,user_agent,user_id) SELECT 7,auth_key,created_at,endpoint,p256dh_key,updated_at,?,user_id FROM push_subscriptions WHERE id=2",
+                            ("Owned ☕\0trailing",),
+                        )
+                        expected = PushWeb.query_message_push_subscriptions(app, 1)
+                        owned = PushWeb.message_push_subscriptions(app, 1)
+                        @test isequal(owned, expected)
+                        @test length(owned) == 3
+                        @test count(subscription -> subscription.user_id == 2, owned) == 2
+                        @test only(s for s in owned if s.id == 7).user_agent == "Owned ☕"
+                        @test [s.id for s in owned] == [s.id for s in expected]
+                        PushWeb.execute!(
+                            app,
+                            "UPDATE push_subscriptions SET user_agent='Changed',auth_key='changed-auth'",
+                        )
+                        current = PushWeb.message_push_subscriptions(app, 1)
+                        GC.gc()
+                        @test all(s -> s.user_agent == "Changed", current)
+                        @test only(s for s in owned if s.id == 7).user_agent == "Owned ☕"
+                        @test only(s for s in owned if s.id == 7).auth_key ==
+                              PushWeb.urlbase64(auth)
+
+                        first_id, late_id = first(owned).id, last(owned).id
+                        @test first_id != late_id
+                        # SQLite.jl derives query metadata from the first row.
+                        # A late mismatch must rerun the entire original query,
+                        # including its conversion rules, rather than mix rows.
+                        for (scenario, column, first_value, late_value) in (
+                            (:late_raw_blob, "user_agent", "first", UInt8[0x61, 0x62]),
+                            (
+                                :late_serialized_text,
+                                "user_agent",
+                                "first",
+                                SQLite.sqlserialize("late ☕"),
+                            ),
+                            (
+                                :null_then_serialized,
+                                "user_agent",
+                                nothing,
+                                SQLite.sqlserialize("late ☕"),
+                            ),
+                            (
+                                :blob_then_serialized,
+                                "user_agent",
+                                SQLite.sqlserialize("first ☕"),
+                                SQLite.sqlserialize("late ☕"),
+                            ),
+                            (
+                                :late_serialized_number,
+                                "user_agent",
+                                "first",
+                                SQLite.sqlserialize(2),
+                            ),
+                            (
+                                :required_raw_blob,
+                                "created_at",
+                                timestamp,
+                                UInt8[0x61, 0x62],
+                            ),
+                        )
+                            @testset "$scenario" begin
+                                PushWeb.execute!(app, "SAVEPOINT subscription_conversion")
+                                try
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE push_subscriptions SET $column=? WHERE id=?",
+                                        (first_value, first_id),
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "UPDATE push_subscriptions SET $column=? WHERE id=?",
+                                        (late_value, late_id),
+                                    )
+                                    expected_result = subscription_result(
+                                        PushWeb.query_message_push_subscriptions,
+                                    )
+                                    actual_result = subscription_result(
+                                        PushWeb.message_push_subscriptions,
+                                    )
+                                    @test isequal(actual_result, expected_result)
+                                    if scenario in (
+                                        :late_raw_blob,
+                                        :late_serialized_number,
+                                        :required_raw_blob,
+                                    )
+                                        @test actual_result.error_type === MethodError
+                                    else
+                                        @test actual_result.error_type === nothing
+                                        @test length(actual_result.value) == length(owned)
+                                    end
+                                finally
+                                    PushWeb.execute!(
+                                        app,
+                                        "ROLLBACK TO subscription_conversion",
+                                    )
+                                    PushWeb.execute!(app, "RELEASE subscription_conversion")
+                                end
+                                @test isequal(
+                                    PushWeb.message_push_subscriptions(app, 1),
+                                    current,
+                                )
+                            end
+                        end
+                    finally
+                        PushWeb.execute!(app, "ROLLBACK TO native_subscription_rows")
+                        PushWeb.execute!(app, "RELEASE native_subscription_rows")
+                    end
+                    @test isequal(PushWeb.message_push_subscriptions(app, 1), canonical)
+
+                    for layout in (:extra_column, :swapped_names, :late_step_error)
+                        @testset "$layout" begin
+                            PushWeb.execute!(app, "SAVEPOINT subscription_layout")
+                            try
+                                if layout == :extra_column
+                                    PushWeb.execute!(
+                                        app,
+                                        "ALTER TABLE push_subscriptions ADD COLUMN extra TEXT",
+                                    )
+                                elseif layout == :swapped_names
+                                    PushWeb.execute!(
+                                        app,
+                                        "ALTER TABLE push_subscriptions RENAME COLUMN auth_key TO temporary_key",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "ALTER TABLE push_subscriptions RENAME COLUMN endpoint TO auth_key",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "ALTER TABLE push_subscriptions RENAME COLUMN temporary_key TO endpoint",
+                                    )
+                                else
+                                    late_id = last(canonical).id
+                                    PushWeb.execute!(
+                                        app,
+                                        "ALTER TABLE push_subscriptions RENAME TO original_subscriptions",
+                                    )
+                                    PushWeb.execute!(
+                                        app,
+                                        "CREATE VIEW push_subscriptions AS SELECT id,auth_key,created_at,endpoint,p256dh_key,updated_at,CASE WHEN id=$late_id THEN abs(-9223372036854775808) ELSE user_agent END AS user_agent,user_id FROM original_subscriptions",
+                                    )
+                                    # The initial row succeeds; the failure must
+                                    # come from a subsequent sqlite3_step call.
+                                    PushWeb.with_statement(
+                                        PushWeb.prepared_statement(
+                                            app,
+                                            PushWeb.MESSAGE_PUSH_SUBSCRIPTIONS_SQL,
+                                        ),
+                                        (Int64(1),),
+                                    ) do handle, status
+                                        @test status == SQLite.C.SQLITE_ROW
+                                        @test SQLite.C.sqlite3_column_int64(handle, 0) ==
+                                              first(canonical).id
+                                    end
+                                end
+                                expected_result = subscription_result(
+                                    PushWeb.query_message_push_subscriptions,
+                                )
+                                actual_result =
+                                    subscription_result(PushWeb.message_push_subscriptions)
+                                @test isequal(actual_result, expected_result)
+                                @test actual_result.error_type === (
+                                    layout == :late_step_error ? SQLite.SQLiteException :
+                                    nothing
+                                )
+                                if layout == :swapped_names
+                                    @test first(actual_result.value).auth_key ==
+                                          first(canonical).endpoint
+                                    @test first(actual_result.value).endpoint ==
+                                          first(canonical).auth_key
+                                end
+                            finally
+                                PushWeb.execute!(app, "ROLLBACK TO subscription_layout")
+                                PushWeb.execute!(app, "RELEASE subscription_layout")
+                            end
+                            @test isequal(
+                                PushWeb.message_push_subscriptions(app, 1),
+                                canonical,
+                            )
+                        end
+                    end
+                end
                 token = PushWeb.signed_token(app, "mention", "3")
                 PushWeb.execute!(
                     app,

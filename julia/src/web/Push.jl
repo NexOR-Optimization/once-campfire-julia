@@ -501,10 +501,7 @@ const PushMessage = @NamedTuple{
     plain_text::String,
 }
 
-function message_push_subscriptions(app, message_id)
-    return withquery(
-        app,
-        """
+const MESSAGE_PUSH_SUBSCRIPTIONS_SQL = """
 SELECT p.*, mm.involvement, msg.room_id AS delivery_room_id,
   msg.creator_id AS delivery_creator_id FROM messages msg
 JOIN users author ON author.id=msg.creator_id AND author.status=0
@@ -513,9 +510,10 @@ JOIN users recipient ON recipient.id=mm.user_id
 JOIN push_subscriptions p ON p.user_id=recipient.id
 WHERE msg.id=? AND recipient.status=0 AND recipient.id<>msg.creator_id
   AND mm.connections=0 AND mm.involvement IN ('everything','mentions')
-""",
-        (message_id,),
-    ) do rows
+"""
+
+function query_message_push_subscriptions(app, message_id)
+    return withquery(app, MESSAGE_PUSH_SUBSCRIPTIONS_SQL, (message_id,)) do rows
         # The fixed projection avoids rebuilding a heterogeneous tuple for each
         # row, while SQLite.jl still copies strings before the statement resets.
         return [
@@ -534,6 +532,84 @@ WHERE msg.id=? AND recipient.status=0 AND recipient.id<>msg.creator_id
             )) for row in rows
         ]
     end
+end
+
+message_push_subscriptions(app, message_id) =
+    query_message_push_subscriptions(app, message_id)
+
+function message_push_subscriptions(app, message_id::Int64)
+    statement = prepared_statement(app, MESSAGE_PUSH_SUBSCRIPTIONS_SQL)
+    subscriptions = with_statement(statement, (message_id,)) do handle, status
+        # SELECT p.* follows the table layout. Check names without allocating
+        # strings, and retain the generic projection for an altered schema.
+        names = (
+            "id",
+            "auth_key",
+            "created_at",
+            "endpoint",
+            "p256dh_key",
+            "updated_at",
+            "user_agent",
+            "user_id",
+            "involvement",
+            "delivery_room_id",
+            "delivery_creator_id",
+        )
+        SQLite.C.sqlite3_column_count(handle) == length(names) || return missing
+        for column in eachindex(names)
+            name = SQLite.C.sqlite3_column_name(handle, column - 1)
+            name != C_NULL &&
+            ccall(:strcmp, Cint, (Cstring, Cstring), name, names[column]) == 0 ||
+                return missing
+        end
+        result = PushSubscription[]
+        while status == SQLite.C.SQLITE_ROW
+            # Validate every storage class before copying or advancing a row.
+            classes = ntuple(
+                column -> SQLite.C.sqlite3_column_type(handle, column - 1),
+                Val(11),
+            )
+            all(column -> classes[column] == SQLite.C.SQLITE_INTEGER, (1, 8, 10, 11)) ||
+                return missing
+            all(column -> classes[column] == SQLite.C.SQLITE_TEXT, (3, 6, 9)) ||
+                return missing
+            all(
+                column ->
+                    classes[column] in (SQLite.C.SQLITE_NULL, SQLite.C.SQLITE_TEXT),
+                (2, 4, 5, 7),
+            ) || return missing
+            push!(
+                result,
+                PushSubscription((
+                    SQLite.sqlitevalue(Int64, handle, 1),
+                    classes[2] == SQLite.C.SQLITE_NULL ? missing :
+                    SQLite.sqlitevalue(String, handle, 2),
+                    SQLite.sqlitevalue(String, handle, 3),
+                    classes[4] == SQLite.C.SQLITE_NULL ? missing :
+                    SQLite.sqlitevalue(String, handle, 4),
+                    classes[5] == SQLite.C.SQLITE_NULL ? missing :
+                    SQLite.sqlitevalue(String, handle, 5),
+                    SQLite.sqlitevalue(String, handle, 6),
+                    classes[7] == SQLite.C.SQLITE_NULL ? missing :
+                    SQLite.sqlitevalue(String, handle, 7),
+                    SQLite.sqlitevalue(Int64, handle, 8),
+                    SQLite.sqlitevalue(String, handle, 9),
+                    SQLite.sqlitevalue(Int64, handle, 10),
+                    SQLite.sqlitevalue(Int64, handle, 11),
+                )),
+            )
+            status = SQLite.C.sqlite3_step(handle)
+            status in (SQLite.C.SQLITE_ROW, SQLite.C.SQLITE_DONE) ||
+                throw(SQLite.sqliteexception(statement.db))
+        end
+        return result
+    end
+    # Reset before rereading the whole query: its first row determines SQLite.jl's
+    # handling of later BLOB values. Discard every provisional row on fallback.
+    # An external writer may commit between reads; the fresh query reruns all
+    # recipient predicates, and the subsequent message read still checks room/author.
+    return subscriptions === missing ? query_message_push_subscriptions(app, message_id) :
+           subscriptions
 end
 
 function message_push_message(app, message_id, room_id, creator_id)
