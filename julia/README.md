@@ -180,6 +180,76 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Matched server comparison after request parsing change, 2026-10-15
+
+A fresh three-round comparison measures committed Julia `d9c1676` against the
+previous `bcb491f` implementation and C `873a51f` on this machine's Intel Core
+i7-12700K. Both Julia versions use `2,2` threads and the same four server cores.
+These are medians, rounded to whole requests per second:
+
+| HTTP workload (requests/sec) | Julia before | Julia after | C | Julia median change |
+|---|---:|---:|---:|---:|
+| Messages page | 107,931 | 109,946 | 106,671 | +1.87% |
+| Sidebar | 114,770 | 115,640 | 118,508 | +0.76% |
+| Post a message | 5,959 | 6,122 | 4,765 | +2.73% |
+
+The messages median is modestly higher, but this does not establish a repeatable
+throughput improvement from the parsing change. Its paired round changes are
+−0.44%, −0.74% and +5.00%; sidebar changes are −4.80%, +0.76% and +3.19%.
+POST changes also vary in direction. The allocation savings measured below
+remain the clearest benefit. These fresh medians put the current Julia version
+3.07% above C for messages, 2.42% below for sidebar and 28.47% above for POST;
+they do not establish a general read-performance winner.
+
+| Median per-run p99 (ms) | Julia before | Julia after | C |
+|---|---:|---:|---:|
+| Messages page | 0.240 | 0.239 | 0.305 |
+| Sidebar | 0.218 | 0.212 | 0.267 |
+| Post a message | 11.687 | 11.711 | 4.611 |
+
+C retains substantially lower POST tail latency and peak memory. Maximum
+container lifetime peaks are 2,396.1 MiB before, 2,189.2 MiB after and 124.4 MiB
+for C. These include startup/JIT, warmup and all earlier routes, with different
+numbers of posted messages. They are not steady-state heap or allocation-per-
+request measurements, and their change cannot be assigned solely to parsing.
+
+The previous competing Julia job had finished. A read-only host monitor on an
+unused efficiency core sampled processes roughly every 15 seconds; the other
+persistent Julia REPL used 0% CPU in all 52 observations. Intermittent Firefox
+activity was still recorded, peaking at about 0.88 CPU across two processes in
+one interval. The monitor omits short-lived processes and small non-Julia loads.
+This was a matched workstation run, not a fully isolated host; the small median
+changes should not be attributed confidently to the optimization.
+
+Rounds rotate C/before/after, before/after/C, then after/C/before. Each route
+uses 10 seconds of warmup at four clients and 15 measured seconds at 16 clients,
+with a fresh shared-fixture copy per application-round. Server CPUs remain
+`0,2,4,6`, client CPUs `8,10,12,14`; gzip, host networking, load generator,
+contracts and write audits are unchanged. GC is enabled and the total Julia
+response-cache budget is 64 MiB. All writers use `NORMAL` on tmpfs; Julia's
+production default remains `FULL`. Durable-disk synchronization, mixed traffic
+and real-provider notification delivery are not measured. HTTP write audits
+do not establish equal background-job completion. Room/search, Rust and source
+line counts were not rerun in this three-route comparison.
+
+All 45,504,453 responses validate, including 30,990,029 timed responses, with
+zero errors or invalid responses. Independent read-only audits verify all
+1,231,261 acknowledged writes across 18 receipt files and nine databases:
+exact IDs, rooms, rich-text/FTS bodies, no extra writes, integrity, and unchanged
+database/WAL hashes. The 163 focused assertions, coverage probes, browser smoke
+test and formatter check belong to the preceding implementation validation;
+this run verifies its unchanged committed source and image without rerunning
+tests during timing.
+
+Measured sources are clean commits. Baseline image is `sha256:c5c0e2d8aa29…`,
+runtime digest `7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a`;
+current image is `sha256:5980bb9d85f3…`, runtime digest
+`a48d4792d4a0e2aa4f65cec8054aa1450d567f57b9d845242c6a4ee791a9e584`.
+C remains image `sha256:820f3ef4f63e…`. Fresh source/image proofs, all three
+rounds, receipts, audits and host samples are retained separately under
+`tmp/julia-full-server/2026-10-15-message-params-full/` (ignored by Git).
+The earlier contaminated pilot remains separate historical evidence.
+
 ## Less allocation in message request parsing, 2026-10-15
 
 `request_parameters` now skips decoding an empty query and only parses
@@ -215,8 +285,8 @@ slowed sharply. Immediately afterward, an unrelated Julia job was observed
 using roughly one CPU with affinity across all cores; its lifetime overlapped
 the end of the pilot. The exact contribution to each sample is unknown. The
 apparent aggregate 8.34% messages and 4.59% sidebar gains are therefore excluded
-from performance claims. No longer comparison against C was run while that job
-remained active; the last clean full-server table below remains the reference.
+from performance claims. The later matched comparison above reruns all three
+implementations after that Julia job finished and documents remaining host noise.
 
 The focused modified test file passes 163 assertions with and without temporary
 coverage probes, and the Chromium smoke test passes. JuliaFormatter 2.14.0's
