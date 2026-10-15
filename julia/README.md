@@ -180,6 +180,110 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Full local comparison: Julia `4,4`, Julia `2,2` and C, 2026-10-15
+
+Fresh measurements on this machine's **Intel Core i7-12700K**, with the same
+four server cores allocated to each configuration. All five HTTP routes were
+rerun together; these are medians of three rotating rounds, rounded to whole
+requests per second. The source-size row is a separate count, not a timed test.
+
+| HTTP workload (requests/sec) | Julia `4,4` | Julia `2,2` | C |
+|---|---:|---:|---:|
+| Room page | 39,100 | 105,371 | 102,847 |
+| Messages page | 35,041 | 110,932 | 111,478 |
+| Sidebar | 36,408 | 117,504 | 118,692 |
+| Search | 41,307 | 114,766 | 114,673 |
+| Post a message | 3,758 | 6,198 | 4,759 |
+| Backend KLOC | 7.3 | 7.3 | 94.8 |
+
+Julia `2,2` reaches roughly C's read throughput: its medians range from 1.00%
+below C to 2.45% above. Differences this small across three rounds do not
+establish a general read-performance winner. Its POST throughput is 30.25%
+higher than C's, while C retains substantially lower POST tail latency:
+
+| Median per-run p99 (ms) | Julia `4,4` | Julia `2,2` | C |
+|---|---:|---:|---:|
+| Room page | 3.679 | 0.221 | 0.334 |
+| Messages page | 3.905 | 0.208 | 0.312 |
+| Sidebar | 3.947 | 0.191 | 0.269 |
+| Search | 3.697 | 0.200 | 0.291 |
+| Post a message | 12.263 | 11.487 | 4.531 |
+
+Maximum container lifetime memory peaks across the complete five-route runs
+are **2,453.7 MiB** for Julia `4,4`, **3,489.1 MiB** for Julia `2,2`, and
+**112.9 MiB** for C. These include startup/JIT, warmup, earlier routes and
+different numbers of persisted messages. They are not steady-state live heap,
+RSS or per-request allocation measurements, and cannot identify a memory leak
+or its cause. C has a large measured memory advantage in this run.
+
+The Julia columns use identical application source and the same Julia 1.13.1
+image. `4,4` means four application workers plus four interactive I/O threads;
+`2,2` means two of each. Both have only four allocated server cores. Fresh Julia
+API probes report four versus two GC threads, and the application also selects
+four versus two exclusive readers/cache shards. GC remains enabled and the
+total response-cache budget stays 64 MiB. This combined configuration change
+does not isolate why `4,4` is slower. C uses four HTTP loops plus its native
+reader, writer and job pools; CPU allocation is matched, not total thread count.
+
+Each route has ten seconds of warmup at four clients and fifteen measured
+seconds at 16 clients. Server CPUs are `0,2,4,6`, four distinct performance
+cores; the client uses four other performance cores, `8,10,12,14`. Round order
+rotates C/Julia `4,4`/Julia `2,2`, Julia `4,4`/Julia `2,2`/C, then
+Julia `2,2`/C/Julia `4,4`. Each application-round starts from a fresh fixture
+copy, then runs room, messages, sidebar, search and POST in that order.
+The harness uses gzip, host networking and unchanged response contracts;
+rendered HTML and compressed sizes can differ between implementations.
+
+Both Julia writers explicitly use `DATABASE_SYNCHRONOUS=NORMAL` to match C;
+Julia's default remains `FULL`. C sets all handles to `NORMAL`, while Julia's
+query-only reader/observer settings are unchanged. Disposable databases reside
+on `/tmp` tmpfs, so this does not measure durable-disk synchronization cost.
+Local unavailable/rejected notification endpoints do not measure real-provider
+delivery, and write audits do not establish equal background-job completion.
+Rust and mixed read/write traffic were not measured. These local results must
+not be combined with the root README's published AMD-machine throughput table.
+
+The fresh source count is **7,294 Julia lines** and **94,816 C lines**, using
+`cloc` 2.06 consistently for both implementations (the upstream table used
+2.10). It counts maintained backend-language files, including Julia's selectable
+prototype and C's first-party media helper. It excludes blank lines, comments,
+standalone SQL, shell/build/deployment files, fixture seeds, tests, benchmarks,
+frontend assets, dependencies and whole generated files. Inline generated/test
+blocks inside maintained runtime files remain counted. `--docstring-as-code`
+preserves executable Julia triple-quoted SQL/HTML; eight genuine one-line
+docstrings are explicitly reclassified as comments. The earlier roughly 7.6
+Julia KLOC count included SQL, shell and seed files and those docstrings; the
+new number changes the counting scope, not the source. Counts reflect formatting,
+dependency and feature boundaries, not equivalent coverage or maintainability.
+
+All **69,734,971 responses**, including warmup, validate with zero errors or
+invalid responses; 47,654,386 are timed responses. Independent read-only audits
+verify all **1,052,048 acknowledged writes** from 18 receipt files across nine
+databases, including exact IDs, rooms, rich-text and FTS bodies, no extra writes,
+integrity checks and unchanged database/WAL hashes. The unchanged focused
+transport test passes **206 assertions under `--threads=4,4`**, and the unchanged
+Chromium smoke test passes. The preceding `2,2` test/browser evidence remains
+applicable to the identical runtime. No production or test source changed here.
+
+Julia was measured at clean source revision `0acee77`, image
+`sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131`,
+with runtime digest
+`7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a`.
+C remains at `873a51f`, image
+`sha256:820f3ef4f63e72f26031698a6f6146d3e779ccf75390f90598183d7c68862cca`.
+Fresh image/source checks confirm these identities. Verification checkout
+`ec02deb` and its unchanged load generator supply the contracts and write audits.
+
+An earlier incomplete attempt hit the host's `/tmp` user quota while the load
+generator wrote a receipt. All of its samples are excluded. Four older completed
+Julia runtime directories were moved to ignored workspace storage with exact
+file/hash verification and symlinks preserving their original paths; no retained
+evidence was discarded. The entire three-round comparison was then rerun.
+Successful raw results, receipts, audit reports, source/count manifests, launch
+scripts, tests and browser evidence are retained under
+`tmp/julia-full-server/2026-10-15-full-table/` (ignored by Git). The failed attempt
+is separate; evidence archives exclude runtime databases, storage and credentials.
+
 ## Two I/O threads on four CPUs, 2026-10-14
 
 Changing `JULIA_NUM_THREADS=4,1` to `2,2` closes the measured cached-room gap
