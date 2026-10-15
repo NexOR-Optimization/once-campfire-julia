@@ -16,6 +16,60 @@ end
     @test parameters["label"] == "Julia & Ruby"
     @test parameters["tags[]"] == ["a", "b"]
     @test W.request_parameters(req, HTTP.URI(req.target)) == parameters
+
+    for target in ("/up", "/up?"),
+        headers in (
+            Pair{String,String}[],
+            ["Content-Type" => "application/x-www-form-urlencoded; charset=UTF-8"],
+            ["Content-Type" => "APPLICATION/JSON; charset=UTF-8"],
+            ["Content-Type" => "multipart/form-data"],
+            ["Content-Type" => "application/octet-stream"],
+        )
+
+        empty_request = HTTP.Request("GET", target, headers)
+        first_parameters = W.request_parameters(empty_request)
+        second_parameters = W.request_parameters(empty_request, HTTP.URI(target))
+        @test first_parameters isa Dict{String,Any}
+        @test isempty(first_parameters)
+        @test isempty(second_parameters)
+        first_parameters["request-local"] = "changed"
+        @test !haskey(second_parameters, "request-local")
+    end
+
+    query = HTTP.Request("GET", "/up?label=Julia+%26+Ruby&tag=a&tag=b&flag&empty=")
+    @test W.request_parameters(query) ==
+          Dict("label" => "Julia & Ruby", "tag" => ["a", "b"], "flag" => "", "empty" => "")
+    form = HTTP.Request(
+        "POST",
+        "/up?tag=query-a&tag=query-b&single=query&preserved=query",
+        ["Content-Type" => "APPLICATION/X-WWW-FORM-URLENCODED; charset=UTF-8"],
+        "tag=body-a&tag=body-b&single=body",
+    )
+    @test W.request_parameters(form) ==
+          Dict("tag" => ["body-a", "body-b"], "single" => "body", "preserved" => "query")
+
+    # Form and JSON bodies replace query values; multipart appends duplicate values.
+    json = HTTP.Request(
+        "POST",
+        "/up?account%5Bname%5D=query",
+        ["Content-Type" => "APPLICATION/JSON; charset=UTF-8"],
+        JSON3.write((account = (name = "body",), count = 2)),
+    )
+    @test W.request_parameters(json) == Dict("account[name]" => "body", "count" => 2)
+    boundary = "campfire-parameter-test"
+    multipart_body =
+        join((
+            "--$boundary\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\n$value\r\n"
+            for value in ("body-a", "body-b")
+        ),) * "--$boundary--\r\n"
+    multipart = HTTP.Request(
+        "POST",
+        "/up?tag=query",
+        ["Content-Type" => "multipart/form-data; boundary=$boundary"],
+        multipart_body,
+    )
+    @test W.request_parameters(multipart)["tag"] == ["query", "body-a", "body-b"]
+    @test_throws ArgumentError W.request_parameters(HTTP.Request("GET", "/up?bad=%ZZ"))
 end
 
 @testset "Whole server HTTP and room authorization" begin

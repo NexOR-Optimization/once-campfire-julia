@@ -180,6 +180,71 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Less allocation in message request parsing, 2026-10-15
+
+`request_parameters` now skips decoding an empty query and only parses
+`Content-Type` when the request has a body. Every request still owns a fresh
+parameter dictionary. Nonempty queries, malformed-input checks, form/JSON body
+overrides, multipart duplicates, authentication and cache transactions retain
+their existing behavior. This is a two-line production change.
+
+A separate component benchmark measures complete cached `handle_request` calls
+with fresh requests, including parameter handling, reader leasing, authorization,
+cache checks and response construction. It excludes sockets and concurrent
+scheduling. The messages request includes `?before=50`; its query is still
+parsed, so only the unused Content-Type processing is removed there.
+
+| Component workload | Before (µs/request) | After (µs/request) | Before (Julia bytes/request) | After (Julia bytes/request) |
+|---|---:|---:|---:|---:|
+| Paginated messages | 7.432 | 7.280 | 4,224 | 4,000 |
+| Sidebar | 6.726 | 6.657 | 3,024 | 2,768 |
+
+These are medians of seven alternating AB/BA rounds of 5,000 calls on CPU 0,
+Julia 1.13.1 with `--threads=1,0` and GC enabled. Baseline and candidate load in
+separate modules with byte-identical synthetic database/storage fixtures and
+two readers each. Allocation counts are identical across all seven rounds:
+messages save 224 Julia bytes (5.30%) per request and sidebar saves 256 (8.47%).
+Native allocations are excluded. Elapsed medians are 2.06%/1.02% lower; these
+small component differences do not establish whole-server throughput gains.
+Plain/gzip GET/HEAD responses match exactly, both return types infer to
+`HTTP.Messages.Response`, and SQL traces remain five statements per hit.
+
+The separate two-round `2,2` server pilot completed 9,799,330 valid responses,
+including 7,038,545 timed responses, with zero errors. Its last baseline round
+slowed sharply. Immediately afterward, an unrelated Julia job was observed
+using roughly one CPU with affinity across all cores; its lifetime overlapped
+the end of the pilot. The exact contribution to each sample is unknown. The
+apparent aggregate 8.34% messages and 4.59% sidebar gains are therefore excluded
+from performance claims. No longer comparison against C was run while that job
+remained active; the last clean full-server table below remains the reference.
+
+The focused modified test file passes 163 assertions with and without temporary
+coverage probes, and the Chromium smoke test passes. JuliaFormatter 2.14.0's
+second repository pass is unchanged. The simpler parsing change is retained
+for its measured allocation reduction. Baseline is `bcb491f`, runtime digest
+`7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a`.
+The candidate image is `sha256:5980bb9d85f3…`, with runtime digest
+`a48d4792d4a0e2aa4f65cec8054aa1450d567f57b9d845242c6a4ee791a9e584`.
+Evidence, exact source snapshots and the pilot qualification are retained under
+`tmp/julia-full-server/2026-10-15-message-params/` (ignored by Git).
+
+## Rejected cache-transaction experiment, 2026-10-15
+
+An autocommit-only cache-hit candidate removed explicit `BEGIN`/`COMMIT`,
+reducing five SQLite commands to three while retaining authorization and both
+observer checks. It passed 455 focused assertions, including external revocation,
+unfinished snapshots and interrupted queries, plus the Chromium smoke test.
+
+The two-round AB/BA server pilot (`2,2`, 5-second warmup, 8-second measurements,
+16 clients) improved messages by only 0.36% and sidebar by 0.09%. All 10,547,704
+responses validated, including 7,272,627 timed responses. The separate
+single-thread component check found unchanged allocations and approximately 1%
+longer request time, with exact body/header parity and the expected SQL reduction.
+These results do not establish a useful speedup, so the production change and
+its candidate-specific tests were rejected. No full C comparison was run for it.
+The candidate, tests and evidence are retained under
+`tmp/julia-full-server/2026-10-15-message-cache/` (ignored by Git).
+
 ## Corrected comparison: Julia `4,0`, Julia `2,2` and C, 2026-10-15
 
 The requested configuration was `4,0`, with no interactive threads. A fresh
@@ -253,17 +318,12 @@ databases, storage and credentials. Before timing, five Julia directories from
 the earlier excluded failed run were moved to workspace storage with exact
 file/hash verification and original-path symlinks to free tmpfs user quota.
 
-The next candidate for messages/sidebar is an autocommit-only cache-hit path:
-omit explicit `BEGIN`/`COMMIT` around the single authorization SELECT while
-retaining fresh authentication, membership checks and both observer-generation
-checks. This would reduce five SQLite command executions to three per hit;
-it does not imply a proportional whole-server gain. It requires a fresh statement
-snapshot, no unfinished statements, unchanged miss transactions, and tests for
-revocation and external commits between checks. A separate `4,0` candidate is
-direct response preparation when the connection already runs on the worker
-pool, avoiding an extra task while checking fairness and exception handling.
-Both are unimplemented hypotheses. Cached hits already skip rendering and gzip;
-profile the request overhead before adding SIMD or rendering specializations.
+The autocommit-only cache-hit hypothesis was subsequently tested and rejected
+as documented above. A separate `4,0` hypothesis is direct response preparation
+when the connection already runs on the worker pool, avoiding an extra task
+while checking fairness and exception handling. Cached hits already skip
+rendering and gzip; request parsing was subsequently simplified as documented
+above, while scheduling remains a candidate to profile.
 
 ## Full local comparison: Julia `4,4`, Julia `2,2` and C, 2026-10-15
 

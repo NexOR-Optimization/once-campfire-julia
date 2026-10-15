@@ -492,9 +492,9 @@ function flatten_json!(parameters, object, prefix = "")
 end
 function request_parameters(req, uri::HTTP.URI = HTTP.URI(req.target))
     parameters = Dict{String,Any}()
-    decode_form!(parameters, uri.query)
-    content_type = lowercase(first(split(HTTP.header(req, "Content-Type"), ';')))
+    isempty(uri.query) || decode_form!(parameters, uri.query)
     if !isempty(req.body)
+        content_type = lowercase(first(split(HTTP.header(req, "Content-Type"), ';')))
         if content_type == "application/x-www-form-urlencoded"
             body_parameters = decode_form!(Dict{String,Any}(), String(copy(req.body)))
             merge!(parameters, body_parameters)
