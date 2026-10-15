@@ -81,10 +81,24 @@ cores, Julia `2,2`, gzip, 16 clients and three rounds. Both servers used SQLite
 
 Julia used more memory and had higher POST tail latency in this run: lifetime container
 memory peaked near 3.0 GiB versus 108 MiB for C, and median POST p99 was 11.495 ms
-versus 4.479 ms. GC stayed enabled. These warmed, isolated workloads do not measure
-startup, durable-disk throughput or production mixed traffic. Rust was not part of
-this run, and these numbers should not be combined with Basecamp's measurements
-on different hardware.
+versus 4.479 ms. GC stayed enabled. These warmed, isolated throughput and latency
+measurements exclude startup and do not cover durable-disk throughput or production
+mixed traffic. Rust was not part of this run, and these numbers should not be
+combined with Basecamp's measurements on different hardware.
+
+The current server uses Julia's JIT compiler, keeping compilation machinery
+(including LLVM), compiled code and runtime metadata in the process alongside
+application data and caches. This contributes to its larger memory footprint;
+the measurement does not isolate compiler memory. The reported memory peak
+includes startup, compilation and warmup.
+
+Future work could use [JuliaC](https://github.com/JuliaLang/JuliaC.jl) with
+`--trim=safe` to compile the server ahead of time, moving compilation to the build
+step. [Julia's AOT documentation](https://docs.julialang.org/en/v1/devdocs/aot/)
+describes reduced JIT compiler memory and startup time as benefits. Earlier safe
+trimming checks still found blockers in the full server and its dependencies, so
+this is not yet a supported build or a measured memory saving. AOT would still
+retain Julia's runtime, GC and application memory.
 
 [Benchmark details and reproducible evidence](docs/performance.md) include exact
 revisions, settings, latency, memory, source-count scope and validation results.
