@@ -7,7 +7,7 @@ checkout, and not a general comparison of the languages.
 
 The table uses only the complete run started on **2026-10-15 at 08:09 UTC**.
 Julia's measured revision is
-[`8a4feb2f`](https://github.com/blegat/once-campfire-julia/commit/8a4feb2f27af0929290f0c8162d85f28784055a4) in this repository's filtered history
+[`8a4feb2f`](https://github.com/NexOR-Optimization/once-campfire-julia/commit/8a4feb2f27af0929290f0c8162d85f28784055a4) in this repository's filtered history
 (original revision `76fb004e61252f58f18187b62e5bd8ee50e72bb9`).
 The later request-parameter parsing change is absent from that revision.
 Later three-route runs and exploratory pilots are not combined with this table.

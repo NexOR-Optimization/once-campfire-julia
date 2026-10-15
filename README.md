@@ -12,7 +12,7 @@ notices. See [source provenance](docs/standalone.md) and [MIT-LICENSE](MIT-LICEN
 ## Run with Docker
 
 ```sh
-git clone https://github.com/blegat/once-campfire-julia.git
+git clone https://github.com/NexOR-Optimization/once-campfire-julia.git
 cd once-campfire-julia
 docker build -t once-campfire-julia .
 docker run --rm -p 3000:3000 \
@@ -64,7 +64,7 @@ indexes and triggers at startup. Detailed configuration is in the
 ## Recorded performance
 
 One matched local run measured all five HTTP workloads at the Julia revision
-[`8a4feb2`](https://github.com/blegat/once-campfire-julia/commit/8a4feb2f27af0929290f0c8162d85f28784055a4).
+[`8a4feb2`](https://github.com/NexOR-Optimization/once-campfire-julia/commit/8a4feb2f27af0929290f0c8162d85f28784055a4).
 This is a historical benchmark, not a fresh measurement of the current checkout.
 It used an Intel Core i7-12700K, four physical cores per server, separate client
 cores, Julia `2,2`, gzip, 16 clients and three rounds. Both servers used SQLite
