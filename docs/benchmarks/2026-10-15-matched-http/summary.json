@@ -1,0 +1,258 @@
+{
+  "all_measured_apps": [
+    "c",
+    "julia-4-0",
+    "julia-2-2"
+  ],
+  "application_rounds": 9,
+  "audited_acknowledged_writes": 1194890,
+  "date": "2026-10-15",
+  "errors": 0,
+  "invalid_responses": 0,
+  "raw_samples": 90,
+  "routes": {
+    "messages_page": {
+      "c": {
+        "max_container_lifetime_peak_mib": 41.44921875,
+        "median_p99_ms": 0.314,
+        "median_rps": 110920.9,
+        "p99_ms_samples": [
+          0.314,
+          0.321,
+          0.296
+        ],
+        "rps_samples": [
+          110293.7,
+          112542.3,
+          110920.9
+        ]
+      },
+      "julia-2-2": {
+        "max_container_lifetime_peak_mib": 1775.85546875,
+        "median_p99_ms": 0.236,
+        "median_rps": 109795.0,
+        "p99_ms_samples": [
+          0.217,
+          0.236,
+          0.256
+        ],
+        "rps_samples": [
+          109795.0,
+          108328.3,
+          109917.2
+        ]
+      },
+      "julia-4-0": {
+        "max_container_lifetime_peak_mib": 1561.046875,
+        "median_p99_ms": 0.286,
+        "median_rps": 96099.8,
+        "p99_ms_samples": [
+          0.286,
+          0.29,
+          0.275
+        ],
+        "rps_samples": [
+          96099.8,
+          98617.0,
+          96029.1
+        ]
+      }
+    },
+    "post_message": {
+      "c": {
+        "max_container_lifetime_peak_mib": 108.16015625,
+        "median_p99_ms": 4.479,
+        "median_rps": 4747.4,
+        "p99_ms_samples": [
+          4.479,
+          4.603,
+          4.463
+        ],
+        "rps_samples": [
+          4755.1,
+          4747.4,
+          4744.3
+        ]
+      },
+      "julia-2-2": {
+        "max_container_lifetime_peak_mib": 3048.375,
+        "median_p99_ms": 11.495,
+        "median_rps": 6130.3,
+        "p99_ms_samples": [
+          11.447,
+          11.527,
+          11.495
+        ],
+        "rps_samples": [
+          6130.3,
+          6098.6,
+          6157.5
+        ]
+      },
+      "julia-4-0": {
+        "max_container_lifetime_peak_mib": 2842.98046875,
+        "median_p99_ms": 9.175,
+        "median_rps": 5396.8,
+        "p99_ms_samples": [
+          9.143,
+          9.175,
+          9.191
+        ],
+        "rps_samples": [
+          5396.8,
+          5418.7,
+          5386.2
+        ]
+      }
+    },
+    "room_show": {
+      "c": {
+        "max_container_lifetime_peak_mib": 41.44921875,
+        "median_p99_ms": 0.321,
+        "median_rps": 104823.2,
+        "p99_ms_samples": [
+          0.379,
+          0.321,
+          0.307
+        ],
+        "rps_samples": [
+          101652.6,
+          105314.2,
+          104823.2
+        ]
+      },
+      "julia-2-2": {
+        "max_container_lifetime_peak_mib": 1193.765625,
+        "median_p99_ms": 0.227,
+        "median_rps": 103492.4,
+        "p99_ms_samples": [
+          0.26,
+          0.227,
+          0.226
+        ],
+        "rps_samples": [
+          103422.3,
+          103492.4,
+          104478.1
+        ]
+      },
+      "julia-4-0": {
+        "max_container_lifetime_peak_mib": 1042.69140625,
+        "median_p99_ms": 0.275,
+        "median_rps": 97805.9,
+        "p99_ms_samples": [
+          0.27,
+          0.276,
+          0.275
+        ],
+        "rps_samples": [
+          96774.0,
+          97805.9,
+          101638.4
+        ]
+      }
+    },
+    "search": {
+      "c": {
+        "max_container_lifetime_peak_mib": 41.44921875,
+        "median_p99_ms": 0.282,
+        "median_rps": 114767.3,
+        "p99_ms_samples": [
+          0.282,
+          0.282,
+          0.287
+        ],
+        "rps_samples": [
+          114767.3,
+          114648.0,
+          115904.4
+        ]
+      },
+      "julia-2-2": {
+        "max_container_lifetime_peak_mib": 2853.34765625,
+        "median_p99_ms": 0.247,
+        "median_rps": 111165.4,
+        "p99_ms_samples": [
+          0.206,
+          0.263,
+          0.247
+        ],
+        "rps_samples": [
+          112411.2,
+          109106.9,
+          111165.4
+        ]
+      },
+      "julia-4-0": {
+        "max_container_lifetime_peak_mib": 2645.59765625,
+        "median_p99_ms": 0.259,
+        "median_rps": 102954.9,
+        "p99_ms_samples": [
+          0.257,
+          0.26,
+          0.259
+        ],
+        "rps_samples": [
+          102954.9,
+          101739.3,
+          106154.4
+        ]
+      }
+    },
+    "sidebar": {
+      "c": {
+        "max_container_lifetime_peak_mib": 41.44921875,
+        "median_p99_ms": 0.271,
+        "median_rps": 116795.4,
+        "p99_ms_samples": [
+          0.271,
+          0.267,
+          0.271
+        ],
+        "rps_samples": [
+          116795.4,
+          117011.8,
+          115408.1
+        ]
+      },
+      "julia-2-2": {
+        "max_container_lifetime_peak_mib": 2402.97265625,
+        "median_p99_ms": 0.196,
+        "median_rps": 117438.1,
+        "p99_ms_samples": [
+          0.193,
+          0.2,
+          0.196
+        ],
+        "rps_samples": [
+          118412.8,
+          116135.7,
+          117438.1
+        ]
+      },
+      "julia-4-0": {
+        "max_container_lifetime_peak_mib": 2093.33203125,
+        "median_p99_ms": 0.251,
+        "median_rps": 105851.3,
+        "p99_ms_samples": [
+          0.253,
+          0.251,
+          0.248
+        ],
+        "rps_samples": [
+          105851.3,
+          104961.5,
+          109441.9
+        ]
+      }
+    }
+  },
+  "table_apps": [
+    "c",
+    "julia-2-2"
+  ],
+  "timed_responses": 58969779,
+  "timed_samples": 45,
+  "validated_responses": 85873050,
+  "verified_against_original_report": true
+}

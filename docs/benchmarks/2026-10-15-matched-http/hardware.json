@@ -1,0 +1,147 @@
+{
+  "architecture": "x86_64",
+  "client_cpus": "8,10,12,14",
+  "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700K",
+  "cpu_topology": {
+    "cpus": [
+      {
+        "core": 0,
+        "cpu": 0,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 0,
+        "cpu": 1,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 1,
+        "cpu": 2,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 1,
+        "cpu": 3,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 2,
+        "cpu": 4,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 2,
+        "cpu": 5,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 3,
+        "cpu": 6,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 3,
+        "cpu": 7,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 4,
+        "cpu": 8,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 4,
+        "cpu": 9,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 5,
+        "cpu": 10,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 5,
+        "cpu": 11,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 6,
+        "cpu": 12,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 6,
+        "cpu": 13,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 7,
+        "cpu": 14,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 7,
+        "cpu": 15,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 8,
+        "cpu": 16,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 9,
+        "cpu": 17,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 10,
+        "cpu": 18,
+        "node": 0,
+        "socket": 0
+      },
+      {
+        "core": 11,
+        "cpu": 19,
+        "node": 0,
+        "socket": 0
+      }
+    ]
+  },
+  "host_sampling": "Preflight machine snapshot only; no process CPU monitoring throughout this run. No claim of perfect host isolation.",
+  "kernel": "Linux 7.2.5-3-omarchy",
+  "logical_cpus": 20,
+  "memory_total_bytes": 33476227072,
+  "network": "host",
+  "physical_cores": 12,
+  "selected_cpu_governors": {
+    "0": "powersave",
+    "10": "powersave",
+    "12": "powersave",
+    "14": "powersave",
+    "2": "powersave",
+    "4": "powersave",
+    "6": "powersave",
+    "8": "powersave"
+  },
+  "server_cpus": "0,2,4,6",
+  "storage": "Linux /tmp tmpfs; not persistent-disk latency"
+}

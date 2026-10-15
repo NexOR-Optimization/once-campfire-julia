@@ -1,0 +1,32 @@
+{
+  "avg_bytes": 14222,
+  "conc": 4,
+  "errors": 0,
+  "gzip": true,
+  "invalid_reasons": {},
+  "invalid_responses": 0,
+  "latency": {
+    "max_ms": 16.655,
+    "mean_ms": 0.05,
+    "n": 838664,
+    "p50_ms": 0.043,
+    "p90_ms": 0.052,
+    "p99_ms": 0.067
+  },
+  "ok": 838664,
+  "path": "/rooms/486777696",
+  "rps": 83864.1,
+  "secs": 10.0,
+  "statuses": {
+    "200": 838664
+  },
+  "validation": "route-contract-v1",
+  "generator_cpu_percent": 63.78034710068882,
+  "server_resources": {
+    "cpu_percent": 365.01769213624135,
+    "cpu_usage_usec": 36511834,
+    "sample_elapsed_seconds": 10.002757342066616,
+    "memory_current_bytes": 876163072,
+    "memory_lifetime_peak_bytes": 876408832
+  }
+}

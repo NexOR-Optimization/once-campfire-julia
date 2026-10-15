@@ -1,0 +1,229 @@
+{
+  "source_repository": "https://github.com/basecamp/once-campfire",
+  "source_branch": "julia (local development branch)",
+  "source_tip": "8976167e254478f8586b62223a7088ad1159498e",
+  "standalone_import_tip": "e8d74d299b738b4141c680e729614cbde3f989a5",
+  "note": "Commit identifiers change when paths are filtered. Julia development commits were local and need not exist in the upstream repository.",
+  "commits": [
+    {
+      "original_commit": "8976167e254478f8586b62223a7088ad1159498e",
+      "standalone_commit": "e8d74d299b738b4141c680e729614cbde3f989a5"
+    },
+    {
+      "original_commit": "90dcc729b74048a737abb02911e68eb45d3f1c76",
+      "standalone_commit": "99ced9130c7f893bcd0a8423259169a65e2eb3a4"
+    },
+    {
+      "original_commit": "ad6ceb57d025e407682675e66c0f2cc057e6464d",
+      "standalone_commit": "d0901ea72ba71d42586f63c9d568ce355ae71833"
+    },
+    {
+      "original_commit": "d9c1676cec722b950ceabfdc216e8e437748fbf3",
+      "standalone_commit": "aa7cca9b4a8c5ae879a0aba8fa8bd21095f842df"
+    },
+    {
+      "original_commit": "bcb491f5827a71f43174a4bd3e35d3d5fde942ac",
+      "standalone_commit": "73c671c2a3fe810db4f1aeca9e33fd670a957cab"
+    },
+    {
+      "original_commit": "76fb004e61252f58f18187b62e5bd8ee50e72bb9",
+      "standalone_commit": "8a4feb2f27af0929290f0c8162d85f28784055a4"
+    },
+    {
+      "original_commit": "0acee77fcf3aad4a18f959d28b8f1a81ee6cd0a3",
+      "standalone_commit": "a32c6fea7a6a5b0b15aa5c7da3656629dc3a7d0c"
+    },
+    {
+      "original_commit": "bcd4baa2362fc53d9a4487cb1005dee282e0f677",
+      "standalone_commit": "ec7c4473a38cf705597528d84c08659da738b055"
+    },
+    {
+      "original_commit": "e07808a76d50a1c012d40bc969b3106b4e632a1c",
+      "standalone_commit": "26fbaf77bcc3d576df2d68d05f7f631a317c72a9"
+    },
+    {
+      "original_commit": "447790f9f3118051e45c56fef3eaf0c54fb07f6d",
+      "standalone_commit": "2cc35d1b883f546f19a611f8c47a4a50fb3ebc86"
+    },
+    {
+      "original_commit": "6d2b046c2d92a4a22d5c9a2383f39ee07c0e36fc",
+      "standalone_commit": "d21efa2fecc87eaffbc01d33b656d62bb35e281e"
+    },
+    {
+      "original_commit": "3c64c0bd09dd621b1cd58a016c676c0af5d3768b",
+      "standalone_commit": "f302dd2bb0b9844c894d1bcdff45ee3521457408"
+    },
+    {
+      "original_commit": "24db0b7727967b8b50516682f14ceb844ee5016d",
+      "standalone_commit": "1c2f1804cf5ee3df36c8465f00a9f30d20eaf728"
+    },
+    {
+      "original_commit": "07b3e2a81e846262444bed79f5ba08a8f158ee60",
+      "standalone_commit": "0dbadd1df33f9a3abc7b4e7aab491058e5926e9b"
+    },
+    {
+      "original_commit": "e7f483ccce85d3815e90badfe5ae1c7862eb5f7f",
+      "standalone_commit": "f7fc8da8222d5678d1ce2dfd737b24793bb9e881"
+    },
+    {
+      "original_commit": "0b2d6d36c8301316376422c63455eacebf3afe69",
+      "standalone_commit": "215046683d0056282c50ff12c64db124e79ec556"
+    },
+    {
+      "original_commit": "b0d010d30b8d6ac3e1d28af5bf2f738ebbb15641",
+      "standalone_commit": "a5065a304ab93a926f7a91ab49a6d12b188eb9e4"
+    },
+    {
+      "original_commit": "5b8c6c23f4605dfac297140430ab8ccbeb6a12bf",
+      "standalone_commit": "7b00df8263b8e571b9f5a82f99210ef6cd22a9c9"
+    },
+    {
+      "original_commit": "0981a3288e3fcc513285ca38f46ca96cd8b6d65b",
+      "standalone_commit": "83709a087ad0bce142ca268dbdffebf00a7b3e12"
+    },
+    {
+      "original_commit": "3878bd754faef55ca680d7d77152669291d0f2ea",
+      "standalone_commit": "2ef97fc45af59db318bd96e9ab1eca4ea909b54a"
+    },
+    {
+      "original_commit": "366ffe092dc4f07fcfa413f07e47c87ec1f79c0b",
+      "standalone_commit": "f9e0178ca41d1dc6e1de1e9f8d4aeac70e3d04f6"
+    },
+    {
+      "original_commit": "9ea9bf1bb546376c80e978078bd29baa95396eb8",
+      "standalone_commit": "e48ac1721226f72dafde1fabd38c1d186a42e2eb"
+    },
+    {
+      "original_commit": "f5853f0ab77490602d36fcc4e7e30052f5a0f1be",
+      "standalone_commit": "dfe3dc9004b4a3751dfaf5021a17039ffb1a3d52"
+    },
+    {
+      "original_commit": "0f5d0b2b6e3b79fe47ee7b32dbccb75d6ea663a7",
+      "standalone_commit": "ec9f8f899a1b1de2750905d0fd1d6768eb012ff9"
+    },
+    {
+      "original_commit": "8bbe129030a9b7b1a2eafd09863360223b222fe9",
+      "standalone_commit": "edb006cbb98e2d4c68a421bc3cbcf7929c90ad1f"
+    },
+    {
+      "original_commit": "3c022a1641a641b2dd9ba45196768762753a02c9",
+      "standalone_commit": "8932409692142b00c4a15665015deae725c14740"
+    },
+    {
+      "original_commit": "2b9685c35c5046d7c70c65a4b15c519f2a72fa02",
+      "standalone_commit": "8a4ffbf5ecc632914f04cf5e0b9fb2f7f266981a"
+    },
+    {
+      "original_commit": "7df98ac883aeaf5f058c6744619b4134e8fc6a80",
+      "standalone_commit": "76d3560b3fc07418ef7bbd205eae2992eb025a34"
+    },
+    {
+      "original_commit": "8a6e4290d822fcf19dde464af51094d404d617be",
+      "standalone_commit": "199fab6e91c2c61688fdad48624dad2fea039506"
+    },
+    {
+      "original_commit": "72648a8f41f03e41d3f5130fc6be2a70890ae7fc",
+      "standalone_commit": "e57a3869b4c7bb760cc47ae0e27ab57a7edf943f"
+    },
+    {
+      "original_commit": "1cb2f69786c888b7637fd572e149e7d274ff81da",
+      "standalone_commit": "cfef06c0ca998c6a2bce76f4f4f597124a22647f"
+    },
+    {
+      "original_commit": "4690de5057a92dd7e12a1a8bc8911de6aa02396c",
+      "standalone_commit": "51ff56baed1251881a52d77a09f8bf6f89cae08c"
+    },
+    {
+      "original_commit": "a740581f208775dd46238969cd246fb9e257b777",
+      "standalone_commit": "b6f25e0a80f4c50f0cae4c30a38447049a962924"
+    },
+    {
+      "original_commit": "b8be941b9921c3e77e5fd003e248e63b909d0a41",
+      "standalone_commit": "669246056995f4913a63c0e92ca3283f455748db"
+    },
+    {
+      "original_commit": "955d799d1192fe247bdabaa0f8cd170cbe21122a",
+      "standalone_commit": "daed4a0eb28bcae304fe04ebd37ec71cd2c7538a"
+    },
+    {
+      "original_commit": "87ba7aa3cc93473f6a2030106161a9df6b93344f",
+      "standalone_commit": "aa4707078da7f2423b938637e3685e833e60dab4"
+    },
+    {
+      "original_commit": "5c5821a39548c1e41e6da1f31a855efeb0d42eef",
+      "standalone_commit": "c65f2acec9c8a328714bda5faac9413a51940205"
+    },
+    {
+      "original_commit": "eab554aa4bf1e7cc0b09458c115711c4dc0ec679",
+      "standalone_commit": "00ab74c95a559386880357c2e542e82767d0d821"
+    },
+    {
+      "original_commit": "1bb7ef7c17b4019685903eb781cedff17a1bcbaa",
+      "standalone_commit": "5f1f3e5b8c4510522cc101549b82660752372298"
+    },
+    {
+      "original_commit": "c38e77a897befa2c2ff0017a8b80387da83b83fe",
+      "standalone_commit": "00bb32a08fb6bf533225521c0761b62eb4dbd391"
+    },
+    {
+      "original_commit": "9b1602d0882ee50238443d16fe670fa7d77fff3b",
+      "standalone_commit": "df8bd8b50f5b3b2d3131caad80012e657da0e92b"
+    },
+    {
+      "original_commit": "47bc5f5425bf9c73044e0f849998a5bad9bab8a3",
+      "standalone_commit": "0b810dea10b2d1b0e553356fd941e752d30d833c"
+    },
+    {
+      "original_commit": "872205754531c071b667e8ac52861a3f13ec9958",
+      "standalone_commit": "9fd655e1b398828ecde3ea7df35c54425ca04753"
+    },
+    {
+      "original_commit": "c1ad057db8db186d5408fa986abf2b750ea864fd",
+      "standalone_commit": "a977a9db8f363a17815886f1648f2f41d1e573c0"
+    },
+    {
+      "original_commit": "52ccd24efadbf8edc8bd026b5ee4cadd8a3d1aba",
+      "standalone_commit": "20e68ca191604db456103fd70c6ac0670103e5dd"
+    },
+    {
+      "original_commit": "6f256f5f2d752f93c8c3388000065108c6dd69db",
+      "standalone_commit": "9d7ed9b9aa75694d9867577c7299b01df39d09c7"
+    },
+    {
+      "original_commit": "c8ac87835378df557a24292c16bc15eeeac0b183",
+      "standalone_commit": "96047173734909f7f4279a41cd7d56583ceac621"
+    },
+    {
+      "original_commit": "336c9ae140920052198ab673907fd3a6a23c3e20",
+      "standalone_commit": "7b1868d26cf4d0c04c591710c07896da87272040"
+    },
+    {
+      "original_commit": "c13bd1a4d3aff3426ffa5c9edc50750daa891f29",
+      "standalone_commit": "65a80a67ae60e783f079d6f3a610dc07b7189aa7"
+    },
+    {
+      "original_commit": "5bb257b2d7b3b2497e0d1bf343aaf9291d152df0",
+      "standalone_commit": "f3f7e12c7cc1950d9e85b0d575dbcb1c1b8b33f4"
+    },
+    {
+      "original_commit": "baa2bfc713cb2c8558531e07b01e067efee23cd0",
+      "standalone_commit": "7ea9cf1a91b069d6ba7ea431c5889b7be9d334e7"
+    },
+    {
+      "original_commit": "10569b57a36f2cecdeb21f886c2830d39082cb23",
+      "standalone_commit": "5966f61fc4c410cb405948894f132393e4d35404"
+    },
+    {
+      "original_commit": "3b31a83ac5ca5dbcfbce75454e1193762becbc47",
+      "standalone_commit": "f767af38fe841db63e46fd372d3c7493688df66c"
+    },
+    {
+      "original_commit": "5629dbefbc0ae49513f1fc01cd1d6b1852d4c180",
+      "standalone_commit": "19b53aa6f1684ae7a171ed1b1bb8922cf66a78cc"
+    },
+    {
+      "original_commit": "df76a227dc19cd39cad9f560d61c0f27117365cf",
+      "standalone_commit": "8a88b12f4a01668994aba456dd173027cc98a8d4"
+    }
+  ]
+}

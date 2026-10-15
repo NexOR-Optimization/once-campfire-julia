@@ -1,0 +1,87 @@
+{
+  "adapted_comparison_sha256": "0bdb72e91290a11fb6b81c56297dbb8d25d44abda94ecaf25ccef7711f64fd58",
+  "adapter_sha256": "2efdcaaeb21aa8467563a4c020662f207785984239148256a36b2e4197273c1d",
+  "c_repository": "https://github.com/basecamp/once-campfire-c",
+  "cache_budget_bytes": 67108864,
+  "curation": "Original raw metric bytes are unchanged. Summary recomputed; provenance/host/audit fields explicitly selected. Excludes local paths, image maintainer metadata, fixture labels, message-ID lists, environments with credentials, database/storage files and receipt contents. No measurements from other runs.",
+  "current_standalone_initial_import": "e8d74d299b738b4141c680e729614cbde3f989a5",
+  "durability": "C configures all handles NORMAL; both Julia writers NORMAL, query-only readers/observers retain existing settings.",
+  "fixture_builder_rails_revision": "90b330024dec3e757c79b6a7e6568f93da8e3148",
+  "fixture_database_sha256": "efefd3a9c587c0891d6caf07e9b894887a268b95af186e7fb25c4cbb015bbf1f",
+  "fixture_note": "Generated through the public pinned Rails builder with real attachment variants and private disposable credentials. Neither database, credentials nor labels are distributed. Fresh generation changes private values and the database hash.",
+  "gzip": true,
+  "historical_not_current_head": true,
+  "images": {
+    "c": "sha256:820f3ef4f63e72f26031698a6f6146d3e779ccf75390f90598183d7c68862cca",
+    "julia-2-2": "sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131",
+    "julia-4-0": "sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131"
+  },
+  "julia_environments": {
+    "julia-2-2": {
+      "DATABASE_SYNCHRONOUS": "NORMAL",
+      "JULIA_NUM_THREADS": "2,2"
+    },
+    "julia-4-0": {
+      "DATABASE_SYNCHRONOUS": "NORMAL",
+      "JULIA_NUM_THREADS": "4,0"
+    }
+  },
+  "julia_version": "1.13.1",
+  "loadgen_binary_sha256": "f2f985d2ec281a2846aeb7b354d90c3d78becde3c743ae7fd8d9f9b1e1a69e60",
+  "original_alias_wrapper_sha256": "6f096d920bc3b0c7f4327ce54f1c43affcf9aa1a968d6d67f86ec50c62a9bb8c",
+  "original_frozen_artifact_manifest_sha256": "882b241d7ee44f631a30f918f1cab428361d371cf98068f6010d885c63f86634",
+  "original_report_sha256": "f7676b29c968caea6f3f011266d5aacbd96b73c87339900008eb949bc211308b",
+  "original_source_revisions": {
+    "c": {
+      "dirty": false,
+      "head": "873a51f523de5a0cc235884e5725cfb5521d2027"
+    },
+    "julia-2-2": {
+      "dirty": false,
+      "head": "76fb004e61252f58f18187b62e5bd8ee50e72bb9",
+      "runtime_source_sha256": "7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a"
+    },
+    "julia-4-0": {
+      "dirty": false,
+      "head": "76fb004e61252f58f18187b62e5bd8ee50e72bb9",
+      "runtime_source_sha256": "7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a"
+    }
+  },
+  "original_summary_sha256": "e95432f310a756cf31f342bc1789c31a5d0e2b5578214a14f6334f3b5143a27b",
+  "round_order": [
+    [
+      "c",
+      "julia-4-0",
+      "julia-2-2"
+    ],
+    [
+      "julia-4-0",
+      "julia-2-2",
+      "c"
+    ],
+    [
+      "julia-2-2",
+      "c",
+      "julia-4-0"
+    ]
+  ],
+  "route_order": [
+    "room_show",
+    "messages_page",
+    "sidebar",
+    "search",
+    "post_message"
+  ],
+  "run": "2026-10-15-four-zero",
+  "standalone_measured_commit": "8a4feb2f27af0929290f0c8162d85f28784055a4",
+  "started_at": "2026-10-15T08:09:00Z",
+  "storage_scope": "Disposable /tmp tmpfs; not a durable-disk synchronization comparison.",
+  "timed_clients": 16,
+  "timed_seconds": 15,
+  "upstream_comparison_sha256": "42b9c186b970c5643badcc23913812ff27feaadd8549a019716c512f61abeeb5",
+  "upstream_contracts_and_auditor": "unchanged",
+  "verification_repository": "https://github.com/basecamp/once-campfire-verification",
+  "verification_revision": "ec02debb3e44f40b8778a6a42db3c4515b2f9eaf",
+  "warmup_clients": 4,
+  "warmup_seconds": 10
+}

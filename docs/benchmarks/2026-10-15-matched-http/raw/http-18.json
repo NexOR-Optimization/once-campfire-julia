@@ -1,0 +1,32 @@
+{
+  "avg_bytes": 6098,
+  "conc": 16,
+  "errors": 0,
+  "gzip": true,
+  "invalid_reasons": {},
+  "invalid_responses": 0,
+  "latency": {
+    "max_ms": 18.559,
+    "mean_ms": 0.15,
+    "n": 1544403,
+    "p50_ms": 0.141,
+    "p90_ms": 0.195,
+    "p99_ms": 0.257
+  },
+  "ok": 1544403,
+  "path": "/searches?q=coffee",
+  "rps": 102954.9,
+  "secs": 15.0,
+  "statuses": {
+    "200": 1544403
+  },
+  "validation": "route-contract-v1",
+  "generator_cpu_percent": 81.46232614340272,
+  "server_resources": {
+    "cpu_percent": 377.6625842035673,
+    "cpu_usage_usec": 56665795,
+    "sample_elapsed_seconds": 15.004344451939687,
+    "memory_current_bytes": 2773004288,
+    "memory_lifetime_peak_bytes": 2774110208
+  }
+}

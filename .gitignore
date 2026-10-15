@@ -1,0 +1,19 @@
+# Local databases, generated media, and temporary work.
+/storage/
+/tmp/
+/log/
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Local configuration and the optional upstream verification checkout.
+.env
+.env.*
+!.env.example
+/.verification/
+
+# Editor and operating-system files.
+.DS_Store
+*.swp
+*~

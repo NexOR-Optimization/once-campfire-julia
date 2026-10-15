@@ -1,0 +1,32 @@
+{
+  "avg_bytes": 9354,
+  "conc": 16,
+  "errors": 0,
+  "gzip": true,
+  "invalid_reasons": {},
+  "invalid_responses": 0,
+  "latency": {
+    "max_ms": 12.407,
+    "mean_ms": 3.35,
+    "n": 71181,
+    "p50_ms": 3.323,
+    "p90_ms": 3.859,
+    "p99_ms": 4.463
+  },
+  "ok": 71181,
+  "path": "POST /rooms/201306877/messages",
+  "rps": 4744.3,
+  "secs": 15.0,
+  "statuses": {
+    "200": 71181
+  },
+  "validation": "route-contract-v1",
+  "generator_cpu_percent": 14.702175792691468,
+  "server_resources": {
+    "cpu_percent": 354.51857778138145,
+    "cpu_usage_usec": 53240583,
+    "sample_elapsed_seconds": 15.01771312893834,
+    "memory_current_bytes": 112758784,
+    "memory_lifetime_peak_bytes": 113414144
+  }
+}

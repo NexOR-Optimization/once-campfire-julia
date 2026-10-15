@@ -1,0 +1,285 @@
+{
+  "checks": [
+    "Complete archived and original receipt file sets, SHA256, line counts and ID/token uniqueness",
+    "Upstream audit source is unchanged at the recorded verification revision",
+    "Unchanged upstream acknowledged-write audit: exact ID, room, rich-text and FTS token",
+    "Independent exact rich-text body and FTS body equality to every posted token",
+    "All newly persisted message IDs equal the acknowledged ID set, with no extras",
+    "Total and write-room count growth, rich-text count and recorded round audit agree",
+    "Every persisted message has an FTS entry; PRAGMA integrity_check is ok",
+    "Database and WAL SHA256 remain unchanged throughout the read-only audit"
+  ],
+  "historical_audit_verified": true,
+  "profiles": {
+    "c": {
+      "acknowledged": 354726,
+      "receipt_files": 6,
+      "rounds": [
+        {
+          "acknowledged": 118112,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "7f1477b379c7f503e7396b9c57a4f4a26b57f42ebd2debb13477205aa43dbf53",
+            "production.sqlite3-wal": "b43c401fe2346b1af4082ebe9fd241c666326f19b79f7ebb3d9ecc041de6318d"
+          },
+          "exact_body_and_search_matches": 118112,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 1,
+          "total_message_growth": 118112,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 118112,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 118348,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "1723fee6a3b682a04ca07b53705ef336e53c76670f6a5b1f43006c96bad1d803",
+            "production.sqlite3-wal": "3e31d118f7b30b39885068eb6ed5b387fa958809cc4cac427d6929059a367adc"
+          },
+          "exact_body_and_search_matches": 118348,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 2,
+          "total_message_growth": 118348,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 118348,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 118266,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "8877f93e8ece7bca81954fa072b92138ddede8de5b8b7d965d7166eb5462d1ea",
+            "production.sqlite3-wal": "049f2044ce1320de492bbad55c37b0d98ab3972d5b315e8b6359e368b397955a"
+          },
+          "exact_body_and_search_matches": 118266,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 3,
+          "total_message_growth": 118266,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 118266,
+            "verified": true
+          },
+          "verified": true
+        }
+      ],
+      "verification_revision": "ec02debb3e44f40b8778a6a42db3c4515b2f9eaf"
+    },
+    "julia-2-2": {
+      "acknowledged": 445719,
+      "receipt_files": 6,
+      "rounds": [
+        {
+          "acknowledged": 148357,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "a0112c5134c5b0d7acc6b95336466e4504302854a973008631d6863af180b0ab",
+            "production.sqlite3-wal": "097a1d87f7fe255d4440a31f1bd11c2060b6ca628207b4e2952bee8620e3cb18"
+          },
+          "exact_body_and_search_matches": 148357,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 1,
+          "total_message_growth": 148357,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 148357,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 148061,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "e1aa270b4b89721c4f52a0511963349bc75e3a51a625623107239a376385ff25",
+            "production.sqlite3-wal": "45687e9adce7704d6a01fc5a804ce4fa69ce4ba906bba8bdd165b8326ee5b63b"
+          },
+          "exact_body_and_search_matches": 148061,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 2,
+          "total_message_growth": 148061,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 148061,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 149301,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "572e9217e95e4dd0d834763f37bedc55959e5a90373d43e0c712849388b4d91a",
+            "production.sqlite3-wal": "f366cfaaf9e62061de102533eb85f234542de9d39a56d9db54eec5aa0faa0328"
+          },
+          "exact_body_and_search_matches": 149301,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 3,
+          "total_message_growth": 149301,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 149301,
+            "verified": true
+          },
+          "verified": true
+        }
+      ],
+      "verification_revision": "ec02debb3e44f40b8778a6a42db3c4515b2f9eaf"
+    },
+    "julia-4-0": {
+      "acknowledged": 394445,
+      "receipt_files": 6,
+      "rounds": [
+        {
+          "acknowledged": 131367,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "18ae2016591cd4506ac04a93ff7fbde668fd404711496a2f2a32c02498ce2e56",
+            "production.sqlite3-wal": "4a9ce35417ed1292e6d7d1c281f91959b49e24787d77b750e055d974cece046a"
+          },
+          "exact_body_and_search_matches": 131367,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 1,
+          "total_message_growth": 131367,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 131367,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 131963,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "64a1371a3b62a1f65e5c5d7228b54a8e5e72c37c774d873928c359d0b399a259",
+            "production.sqlite3-wal": "14f2cb2d93498da1e849cf897c18c4c5817682889a6321315e08128dacc3b9eb"
+          },
+          "exact_body_and_search_matches": 131963,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 2,
+          "total_message_growth": 131963,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 131963,
+            "verified": true
+          },
+          "verified": true
+        },
+        {
+          "acknowledged": 131115,
+          "database_and_wal_sha256": {
+            "production.sqlite3": "6a92247541c5b264ccdd14c1b8de7aa1e9406690684dacb931a3b4e593cf58f3",
+            "production.sqlite3-wal": "cb38ed163a2c6f07d0e8909ff87808644602709c70166809a0437a4816176e6c"
+          },
+          "exact_body_and_search_matches": 131115,
+          "integrity_check": "ok",
+          "missing_fts_entries": 0,
+          "receipt_files": 2,
+          "round": 3,
+          "total_message_growth": 131115,
+          "unexpected_or_missing_new_messages": 0,
+          "upstream_audit": {
+            "acknowledged": 131115,
+            "verified": true
+          },
+          "verified": true
+        }
+      ],
+      "verification_revision": "ec02debb3e44f40b8778a6a42db3c4515b2f9eaf"
+    }
+  },
+  "receipt_files": 18,
+  "receipt_hashes": {
+    "receipts/comparison/c-1/post-16.jsonl": {
+      "lines": 71342,
+      "sha256": "cc4a548604d0668387759f67c7e07b453d60560d8d61dc4e84efca8da2845166"
+    },
+    "receipts/comparison/c-1/post-warmup-post_message.jsonl": {
+      "lines": 46770,
+      "sha256": "be1aee1b33b2028b54ec15e850dd7cce0b9ed3867ca7fd26ae4e680c5a09f7fa"
+    },
+    "receipts/comparison/c-2/post-16.jsonl": {
+      "lines": 71230,
+      "sha256": "de217dc5a5b8ec4abc6b6b70eabf562c0ae96d49b5952b16116695b82aafb3cc"
+    },
+    "receipts/comparison/c-2/post-warmup-post_message.jsonl": {
+      "lines": 47118,
+      "sha256": "aee741404fd2c64cdd6a87a67c71054bb6ea040772ead086bb1eca4cad5ff562"
+    },
+    "receipts/comparison/c-3/post-16.jsonl": {
+      "lines": 71181,
+      "sha256": "655647bf0c223f957047396c199d7f85ecec5669a504c0d0617879ff383a52a3"
+    },
+    "receipts/comparison/c-3/post-warmup-post_message.jsonl": {
+      "lines": 47085,
+      "sha256": "0804621a19487c6a83160d986add262a16f9776522fca619945a4c6c3e27d32d"
+    },
+    "receipts/comparison/julia-2-2-1/post-16.jsonl": {
+      "lines": 91972,
+      "sha256": "481ebbef645329648e69a321ab59ad48e25352a4ff7f79c0566372e2030d5c0e"
+    },
+    "receipts/comparison/julia-2-2-1/post-warmup-post_message.jsonl": {
+      "lines": 56385,
+      "sha256": "3cbb7338a7550a9876e862b2bdacfe8a6e96d32d4e8784fe7d63eaffc3e6bd9e"
+    },
+    "receipts/comparison/julia-2-2-2/post-16.jsonl": {
+      "lines": 91496,
+      "sha256": "da7d5e996a3af86b30877b2108fc771d82a2d7f74838859a6a406510ec9d2de4"
+    },
+    "receipts/comparison/julia-2-2-2/post-warmup-post_message.jsonl": {
+      "lines": 56565,
+      "sha256": "c29b240b2a5a8f0312274710560013ae1274d1939f673803307512e42ac91e8f"
+    },
+    "receipts/comparison/julia-2-2-3/post-16.jsonl": {
+      "lines": 92380,
+      "sha256": "b11b81e7cae90ae8900a9af6d0a0fb03022e00d96f4a35750eac99e6a6d51584"
+    },
+    "receipts/comparison/julia-2-2-3/post-warmup-post_message.jsonl": {
+      "lines": 56921,
+      "sha256": "84ed4ef26264aca782c6d41dcec6bc05a3b2443d85eb35df9f2ee43a39017676"
+    },
+    "receipts/comparison/julia-4-0-1/post-16.jsonl": {
+      "lines": 80970,
+      "sha256": "40ff27a62a8b64d35cbdc4cd24d33b412fb47c18ecc3b356be257bff880055f7"
+    },
+    "receipts/comparison/julia-4-0-1/post-warmup-post_message.jsonl": {
+      "lines": 50397,
+      "sha256": "f52cf9342ab056d8fa5b02d60877cff8315c505fa572d2b03aac1d07b6ecaa29"
+    },
+    "receipts/comparison/julia-4-0-2/post-16.jsonl": {
+      "lines": 81299,
+      "sha256": "60ad09fc74d06753ee2b26cfa4696f1dad60382f3d594e781883b0b26943937b"
+    },
+    "receipts/comparison/julia-4-0-2/post-warmup-post_message.jsonl": {
+      "lines": 50664,
+      "sha256": "62bd4124e3d4be5d36e5dee49df602ea0825ca1956d4beaa59d41febbbf9747f"
+    },
+    "receipts/comparison/julia-4-0-3/post-16.jsonl": {
+      "lines": 80810,
+      "sha256": "83b8c16f4b994e9aeb42079a61bc6ebbcf85eedb86085d165f9f74de6f6688fe"
+    },
+    "receipts/comparison/julia-4-0-3/post-warmup-post_message.jsonl": {
+      "lines": 50305,
+      "sha256": "f1783d82e654cc20c3f9c57fea6b0c45abd8cf1962dc4587170472dae20efaff"
+    }
+  },
+  "scope": "Published audit outcome and hashes only. Receipt contents and databases are excluded; the offline checker cannot repeat the database audit.",
+  "total_acknowledged": 1194890,
+  "upstream_auditor_sha256": "0184378e7702ac508fdac01ba2a2f4142b4ed2e2e97ebb5648cc54952e28cb24"
+}

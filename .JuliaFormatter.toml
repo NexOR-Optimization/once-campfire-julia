@@ -1,0 +1,2 @@
+# Tests keep JuliaFormatter's default style; julia/ has its own stricter settings.
+margin = 92

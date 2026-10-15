@@ -1,0 +1,80 @@
+{
+  "c-image-proof.json": {
+    "image_files_sha256": {
+      "/app/campfire": "9c0384741ffc43c23e437e10b74e556c40804f9c6355cab36d66b44553f2a4de",
+      "/app/entrypoint.sh": "828c1380a846f56abfa00ab6cc12cea95d1fbd425df080806e00f8df84abee46"
+    },
+    "image_id": "sha256:820f3ef4f63e72f26031698a6f6146d3e779ccf75390f90598183d7c68862cca",
+    "scope": "Pinned image matches retained optimized executable and tracked startup script. Source checkout is unchanged; the executable was not rebuilt in this refresh.",
+    "source_commit": "873a51f523de5a0cc235884e5725cfb5521d2027",
+    "source_files_sha256": {
+      "Makefile": "e6faa7e41ca581d8104e761ab63dfc0d98ca34670de2946b0f0e4d84d23ebf61",
+      "bench/image/Dockerfile.c": "2f61255f29d85442e63c2a3817b231df84765262a38b70cd88dd9590c7502e9a",
+      "bench/image/entrypoint.sh": "828c1380a846f56abfa00ab6cc12cea95d1fbd425df080806e00f8df84abee46",
+      "src/config.c": "71cc57315c6d7336af6c1b854e66cf97d43d297abd7dad6abeff18c9ce826210",
+      "src/db/reader.c": "5375459b373e340a0b2b35b10d5365db77714c10d2b1cb981bd9cc4574a1cf72",
+      "src/db/writer.c": "2f4f0829ade3f70af566d0b841da55a1f9034a5bf967ffa6644c5436d6f218ed",
+      "vendor/DEPS.json": "2e61b560d1a048ad34208c80074b1fa9787e15a8b757abfa3cd8cfe5ded86b1e"
+    },
+    "verified": true
+  },
+  "final-source-match.json": {
+    "image_id": "sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131",
+    "image_source_match": true,
+    "runtime_source_sha256": "7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a",
+    "verified": true
+  },
+  "image-source.json": {
+    "image_id": "sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131",
+    "runtime_source_sha256": {
+      "julia/src/Web.jl": "9b4fa6b3853c7adf6f2ca6a85fbc0424944d838839b274ca35190af3f08fc162",
+      "julia/src/web/AuthAccounts.jl": "657fce8e83d05d136b199bcbce5015a1ec75800f36bade8bafb339c241ded9db",
+      "julia/src/web/MessagesMedia.jl": "730342c215ee63e374f4968ebada0cbedf8ebd261aa6be9334baf67ade83b42e",
+      "julia/src/web/Push.jl": "9c3c978b9f0fd0f540fdf8f1a514e8c4ca670ec3a8dcb803ef8f0d52568dbcd2",
+      "julia/src/web/Server.jl": "07d1bc916057443309b67077b0213809cb3db425b20b33f4e531c0b9f5724df2",
+      "julia/src/web/Transport.jl": "358d06e63e8741278bfcc7518d348def0cc526d2cc2e5732e1f9414647f5a043"
+    },
+    "verified": true
+  },
+  "selected-topology.json": {
+    "client_cpus": "8,10,12,14",
+    "configurations": {
+      "julia-2-2": {
+        "actual_thread_counts": {
+          "default_threads": 2,
+          "gc_threads": 2,
+          "interactive_threads": 2,
+          "julia_num_gc_threads_env": "unset",
+          "julia_num_threads": "2,2",
+          "julia_version": "1.13.1"
+        },
+        "environment": {
+          "DATABASE_SYNCHRONOUS": "NORMAL",
+          "JULIA_NUM_THREADS": "2,2"
+        },
+        "query_only_readers_from_source": 2
+      },
+      "julia-4-0": {
+        "actual_thread_counts": {
+          "default_threads": 4,
+          "gc_threads": 4,
+          "interactive_threads": 0,
+          "julia_num_gc_threads_env": "unset",
+          "julia_num_threads": "4,0",
+          "julia_version": "1.13.1"
+        },
+        "environment": {
+          "DATABASE_SYNCHRONOUS": "NORMAL",
+          "JULIA_NUM_THREADS": "4,0"
+        },
+        "query_only_readers_from_source": 4
+      }
+    },
+    "image_id": "sha256:c5c0e2d8aa293206c8c71a674bad5fbf4cb73e9a9e7bc77f03a5d6e3aa1c2131",
+    "probe_script_sha256": "9b266bd787d60724b3cd37e6ae990c2b91cd3afc8bab081f9382d4a963a4d9c6",
+    "runtime_source_sha256": "7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a",
+    "scope": "Fresh Julia API probes inside the pinned image with benchmark affinity/environment. Reader counts follow min(default workers,4). Worker, interactive, GC and reader counts vary together; both configurations share the 64 MiB response cache budget and four allocated server CPUs.",
+    "server_cpus": "0,2,4,6",
+    "verified": true
+  }
+}

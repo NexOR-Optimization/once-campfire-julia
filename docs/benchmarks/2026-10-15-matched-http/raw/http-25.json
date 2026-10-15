@@ -1,0 +1,32 @@
+{
+  "avg_bytes": 3638,
+  "conc": 4,
+  "errors": 0,
+  "gzip": true,
+  "invalid_reasons": {},
+  "invalid_responses": 0,
+  "latency": {
+    "max_ms": 6.283,
+    "mean_ms": 0.07,
+    "n": 606648,
+    "p50_ms": 0.062,
+    "p90_ms": 0.067,
+    "p99_ms": 0.081
+  },
+  "ok": 606648,
+  "path": "/users/me/sidebar",
+  "rps": 60663.7,
+  "secs": 10.0,
+  "statuses": {
+    "200": 606648
+  },
+  "validation": "route-contract-v1",
+  "generator_cpu_percent": 41.62458252909995,
+  "server_resources": {
+    "cpu_percent": 363.60465809974096,
+    "cpu_usage_usec": 36368964,
+    "sample_elapsed_seconds": 10.002337206038646,
+    "memory_current_bytes": 1933467648,
+    "memory_lifetime_peak_bytes": 1933770752
+  }
+}

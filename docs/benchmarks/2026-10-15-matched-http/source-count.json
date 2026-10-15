@@ -1,0 +1,12 @@
+{
+  "c_code_lines": 94816,
+  "c_files": 223,
+  "cloc_version": "2.06",
+  "julia_code_lines": 7294,
+  "julia_files": 15,
+  "measured_source_runtime_sha256": "7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a",
+  "note": "Count applies to the measured historical source, not a fresh count of the current standalone checkout.",
+  "reference_summary_sha256": "c2266481ea721891769ee749bb1c75508c9693b16a049a3f89cf7ad7ec69f458",
+  "scope": "Fresh physical nonblank/noncomment backend-language line count, with cloc 2.06 --by-file --skip-uniqueness --docstring-as-code for both implementations. The last flag preserves executable Julia triple-quoted SQL/HTML literals that cloc would otherwise misclassify as documentation. Eight genuine one-line Julia docstrings (seven in Rendering.jl, one in Transport.jl) are explicitly reclassified from code to comments; exact text/line numbers and raw counts are retained. Julia counts server.jl and maintained src Julia files except disposable seed.jl; includes the selectable --prototype runtime (Campfire.jl/Rendering.jl) because it remains maintained source. C counts src C/headers and the first-party libvips adapter, excluding two whole generated headers and two explicitly test-only headers. Native rendering logic is included directly; neither has separate executable template files. Standalone SQL, shell/build/deployment scripts, tests, fixture/benchmark tools, frontend, dependencies and whole generated files are excluded. Inline generated tables and test hooks inside otherwise maintained runtime files remain counted, with no language-specific code stripping. Runtime/package configuration written in another language is excluded. Formatting and dependency boundaries affect counts; these are maintained application lines, not equivalent feature coverage or all code executed by a request. This follows the upstream file-level scope but uses retained cloc 2.06 consistently, not the upstream report's cloc 2.10.",
+  "verified_historical_reference": true
+}

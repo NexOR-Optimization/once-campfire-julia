@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.file }} (${{ matrix.threads }} threads)
+    runs-on: ubuntu-24.04
+    container: julia:1.13.1-bookworm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        file:
+          - julia_rendering.jl
+          - julia_backend.jl
+          - julia_benchmark.jl
+          - julia_handler_benchmark.jl
+          - julia_web_auth.jl
+          - julia_web_messages.jl
+          - julia_web_views.jl
+          - julia_web_server.jl
+          - julia_web_readers.jl
+          - julia_web_sqlite.jl
+          - julia_web_transport.jl
+          - julia_web_media.jl
+          - julia_web_cable.jl
+          - julia_web_unfurl.jl
+          - julia_web_push.jl
+        threads: ["2,2"]
+        include:
+          - file: julia_web_transport.jl
+            threads: "4,0"
+          - file: julia_web_transport.jl
+            threads: "4,1"
+    env:
+      TEST_FILE: ${{ matrix.file }}
+      JULIA_NUM_THREADS: ${{ matrix.threads }}
+    steps:
+      - name: Install native dependencies
+        run: |
+          apt-get update -qq
+          apt-get install --no-install-recommends -y \
+            ca-certificates curl git ffmpeg libcrypt1 libqrencode4 libssl3 \
+            libxml2 libvips-tools
+          if [ "$TEST_FILE" = julia_benchmark.jl ]; then
+            apt-get install --no-install-recommends -y gcc libc6-dev rustc
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Instantiate test environment
+        run: julia --startup-file=no --project=test -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run focused test file
+        run: julia --startup-file=no --project=test "test/$TEST_FILE"
+
+  format:
+    name: Julia formatting
+    runs-on: ubuntu-24.04
+    container: julia:1.13.1-bookworm
+    timeout-minutes: 15
+    steps:
+      - name: Install checkout dependencies
+        run: |
+          apt-get update -qq
+          apt-get install --no-install-recommends -y ca-certificates git
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check JuliaFormatter 2.14.0 output
+        run: |
+          julia --startup-file=no -e '
+            using Pkg
+            Pkg.activate(; temp=true)
+            Pkg.add(PackageSpec(name="JuliaFormatter", version="2.14.0"))
+            using JuliaFormatter
+            format(".")
+          '
+          git diff --exit-code
+
+  docker_browser:
+    name: Docker and upstream browser smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned upstream verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: basecamp/once-campfire-verification
+          ref: ec02debb3e44f40b8778a6a42db3c4515b2f9eaf
+          path: .verification
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Install upstream browser dependencies
+        working-directory: .verification
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build Docker image
+        run: docker build --tag campfire-julia:ci .
+
+      - name: Run unchanged upstream browser smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker logs campfire-julia-ci || true
+            docker rm --force campfire-julia-ci || true
+            docker volume rm campfire-julia-ci-data || true
+          }
+          trap cleanup EXIT
+          docker volume create campfire-julia-ci-data
+          docker run --detach --name campfire-julia-ci \
+            --publish 127.0.0.1:3000:3000 \
+            --mount source=campfire-julia-ci-data,target=/data \
+            --env JULIA_NUM_THREADS=2,2 \
+            --env DATABASE_SYNCHRONOUS=FULL \
+            --env CAMPFIRE_ORIGIN=http://127.0.0.1:3000 \
+            campfire-julia:ci
+          ready=false
+          for attempt in $(seq 1 180); do
+            if curl --fail --silent http://127.0.0.1:3000/up > /dev/null; then
+              ready=true
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' campfire-julia-ci)" != true ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo 'Campfire did not become ready.' >&2
+            exit 1
+          fi
+          node .verification/browser/smoke.mjs --base http://127.0.0.1:3000
