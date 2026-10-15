@@ -161,6 +161,16 @@ end
             @test HTTP.header(head, "X-Content-Type-Options") == "nosniff"
             @test !isempty(request("GET", "/rooms/1"; cookie).body)
             @test isempty(request("HEAD", "/up").body)
+            hostile_headers =
+                ["Origin" => "https://evil.test", "Sec-Fetch-Site" => "cross-site"]
+            for method in ("GET", "HEAD")
+                response = request(method, "/rooms/1"; cookie, headers = hostile_headers)
+                @test response.status == 200
+                @test isempty(response.body) == (method == "HEAD")
+            end
+            for headers in (Pair{String,String}[], hostile_headers)
+                @test request("OPTIONS", "/rooms/1/messages"; cookie, headers).status == 405
+            end
             @test request("GET", "/users/me/sidebar"; cookie).status == 200
             @test request("GET", "/users/me/profile"; cookie).status == 200
             changed = W.handle_request(
@@ -245,6 +255,16 @@ end
                     cookie,
                     params = Dict("_method"=>override, "room[name]"=>"Forbidden"),
                 ).status == 405
+            end
+            for override in ("PATCH", "GET", "OPTIONS")
+                @test request(
+                    "POST",
+                    "/rooms/opens/2";
+                    cookie,
+                    params = Dict("_method" => override, "room[name]" => "Cross-site"),
+                    headers = ["Origin" => "https://evil.test"],
+                ).status == 403
+                @test W.scalar(app, "SELECT name FROM rooms WHERE id=2") == "Renamed by PuT"
             end
             @test request(
                 "GET",
@@ -472,6 +492,8 @@ end
                 app,
                 HTTP.Request("POST", botpath*"/$message_id/boosts", [], "👍"),
             ).status == 201
+            bot_messages =
+                W.scalar(app, "SELECT count(*) FROM messages WHERE creator_id=?", (bot.id,))
             @test W.handle_request(
                 app,
                 HTTP.Request(
@@ -481,6 +503,34 @@ end
                     "Cross-site",
                 ),
             ).status == 403
+            @test W.handle_request(
+                app,
+                HTTP.Request(
+                    "POST",
+                    botpath,
+                    ["Sec-Fetch-Site" => "cross-site"],
+                    "Cross-site bot message",
+                ),
+            ).status == 403
+            @test W.scalar(
+                app,
+                "SELECT count(*) FROM messages WHERE creator_id=?",
+                (bot.id,),
+            ) == bot_messages
+            @test W.handle_request(
+                app,
+                HTTP.Request(
+                    "POST",
+                    botpath,
+                    ["Origin" => "https://chat.test"],
+                    "Same-origin bot message",
+                ),
+            ).status == 201
+            @test W.scalar(
+                app,
+                "SELECT count(*) FROM messages WHERE creator_id=?",
+                (bot.id,),
+            ) == bot_messages + 1
             app.origin = ""
             # Exercise framing over TCP, including compressed bytes, Unicode,
             # HEAD and a bodyless response on reused HTTP connections.

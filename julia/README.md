@@ -180,6 +180,98 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Rejected read-method guard experiment, 2026-10-15
+
+A second candidate moved bot-route and origin processing inside the existing
+write-method guard. Cached GETs skipped an unused regex call; HEAD remained
+normalized to GET, and OPTIONS, POST overrides and bot writes retained their
+existing origin rules. Only `Server.jl` differed from the previous production
+source; the split cache-key candidate below had already been removed.
+
+Seven alternating component rounds found small median time reductions: room
+6.939 → 6.911 µs, messages 7.329 → 7.272 µs, sidebar 6.613 → 6.498 µs and search
+6.914 → 6.887 µs. Sample ranges overlapped. Julia allocation counts stayed at
+3,104/4,000/2,768/3,632 bytes respectively; native PCRE allocations are outside
+that count. Identity/gzip GET/HEAD bytes and headers, five SQL statements and
+concrete response inference matched the baseline.
+
+The separate two-round HTTP pilot did not confirm an overall improvement:
+
+| HTTP workload (requests/sec) | Baseline Julia | Candidate Julia | Median change |
+|---|---:|---:|---:|
+| Room | 103,819 | 104,324 | +0.49% |
+| Sidebar | 117,741 | 115,080 | −2.26% |
+| Search | 113,549 | 114,134 | +0.52% |
+
+Sidebar fell in both pairs, −1.09% and −3.43%. Room's paired changes were
++0.31%/+0.66%, and search's were +2.17%/−1.12%. The production change was
+rejected because the small room/search gains did not justify the observed
+sidebar regression. These short samples do not establish a causal slowdown
+or a new comparison against C.
+
+Both versions used `2,2` threads, the same fixture, gzip and 64 MiB cache,
+server CPUs `0,2,4,6` and client CPUs `8,10,12,14`, five seconds of warmup and
+eight measured seconds at 16 clients, with reversed order in round two.
+Firefox was active in the two-second preflight; during the driver window,
+15 host samples recorded external Julia activity up to 23.95% of one CPU.
+The monitor recorded no unrelated non-Julia process above its 25% reporting
+threshold during that window. Sampling omits short-lived and smaller loads;
+it does not prove host isolation. No POST, C, Rust or source-line-count
+benchmark was run.
+
+All 14,951,842 responses validated, including 10,699,942 timed responses,
+with zero errors or invalid responses. An independent audit recomputed all
+24 raw samples, 12 timed samples and paired changes and checked source/image
+provenance. The candidate passed 179 focused assertions with coverage probes
+and again after formatting, plus the upstream Chromium smoke test. Its source,
+tests and separate measurements are retained under
+`tmp/julia-full-server/2026-10-15-get-guard/` (ignored by Git).
+
+The 16 added origin-boundary assertions are retained. All 179 focused
+assertions pass in a fresh run against the restored production implementation;
+the final two formatter passes change no files. That validation is saved
+separately under the experiment's `retained-tests/` directory.
+
+## Rejected split cache-key experiment, 2026-10-15
+
+A candidate stored origin and cookie as separate key fields, borrowing the
+cookie substring for lookup and owning strings on insertion. It removed one
+joined-string allocation per cached request. The byte budget counted the
+actual payload, dropping the obsolete separator byte per entry.
+
+Seven alternating component rounds measured complete cached `handle_request`
+calls with fresh requests, GC enabled and unchanged authorization/transactions:
+
+| Route | Julia bytes before → candidate | Median time before → candidate (µs) |
+|---|---:|---:|
+| Room | 3,104 → 3,008 | 6.932 → 7.040 |
+| Messages | 4,000 → 3,904 | 7.223 → 7.340 |
+| Sidebar | 2,768 → 2,672 | 6.601 → 6.827 |
+| Search | 3,632 → 3,536 | 6.925 → 7.022 |
+
+All routes saved 96 Julia bytes/request, but median component time rose
+1.4–3.4%. Exact identity/gzip GET/HEAD response parity, the same five SQL
+statements and concrete response inference passed. This synthetic component
+excludes sockets and concurrent scheduling.
+
+A separate two-round, reversed-order HTTP pilot used Julia `2,2`, the same
+fixture and pinned cores, five seconds of warmup and eight measured seconds
+at 16 clients per route. Room median throughput changed +1.16%, sidebar
++0.61% and search +2.25%. Sidebar's paired changes were −1.96%/+3.25%, and
+search's were +9.65%/−4.41%. The host monitor also observed unrelated Julia
+activity up to 81.1% of one CPU and intermittent Firefox work after a quiet
+preflight. These samples do not establish a throughput gain.
+
+The candidate was rejected: lower allocation alone did not justify keeping
+the change. All 14,432,799 pilot responses validated, including 10,364,154
+timed responses, with zero errors or invalid responses. Its 405 focused
+assertions passed with coverage probes and again after formatting; the
+upstream Chromium smoke test passed. Candidate source, tests, component
+results and the separate pilot are retained under
+`tmp/julia-full-server/2026-10-15-cache-key/` (ignored by Git). C and the full
+five-route comparison were not rerun; the previous comparison remains valid
+for its recorded source versions.
+
 ## Matched server comparison after request parsing change, 2026-10-15
 
 A fresh three-round comparison measures committed Julia `d9c1676` against the
