@@ -180,6 +180,69 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Rejected route-classification experiment, 2026-10-15
+
+A candidate classified each cached route once and reused its textual room-ID
+capture for reader selection, authorization and cache admission. Literal sidebar
+and search paths bypassed the room regex. Raw request targets, cache keys, live
+authorization, transactions and invalidation remained unchanged.
+
+The first version returned either `nothing` or a room `SubString`. Although the
+classifier was already inlined, its result made the reader callback a union of
+two closure types. Allocation profiling found an extra callback on every cached
+request and an extra substring on room requests: 64–128 additional Julia bytes.
+There was no allocated classification tuple or `Core.Box`. Using a concrete empty
+`SubString` for roomless routes eliminated those extra allocations; the empty
+capture became `nothing` only at the authorization boundary.
+
+Seven alternating component rounds then measured the revised candidate:
+
+| Cached handler | Julia bytes, both versions | Median time before → candidate (µs) |
+|---|---:|---:|
+| Room | 3,104 | 7.040 → 6.909 |
+| Messages | 4,000 | 7.425 → 7.158 |
+| Sidebar | 2,768 | 6.612 → 6.474 |
+| Search | 3,632 | 6.964 → 6.837 |
+
+Median handler time fell 1.8–3.6%. Messages and search improved in all seven
+pairs; room and sidebar improved in six. These synthetic, single-thread samples
+include fresh requests and authorization but exclude sockets and concurrent
+scheduling. Identity/gzip GET/HEAD response parity, concrete response inference
+and the same five SQL statements passed. Separate allocation-only checks found
+unchanged authenticated page-cache-miss medians, but anonymous room redirects
+rose from 11,792 to 12,016 bytes because the capture now occurs before login.
+Those checks warmed code and prepared statements; they did not measure latency.
+
+The two-round HTTP pilot did not establish a useful sidebar or search gain:
+
+| HTTP workload (requests/sec) | Baseline Julia | Candidate Julia | Median change |
+|---|---:|---:|---:|
+| Room | 104,128 | 105,021 | +0.86% |
+| Sidebar | 117,202 | 117,239 | +0.03% |
+| Search | 113,460 | 113,983 | +0.46% |
+
+Room's paired changes were +1.56%/+0.16%, sidebar's +1.01%/−0.96%, and search's
++2.13%/−1.21%. Both versions used `2,2` threads, the shared fixture, gzip, two
+readers and the 64 MiB cache, with server CPUs `0,2,4,6` and client CPUs
+`8,10,12,14`. Each route had five seconds of warmup and eight measured seconds
+at 16 clients; the second round reversed baseline/candidate order. All 15 host
+samples recorded the external Julia process at 0% CPU and no unrelated process
+above the 25% reporting threshold. Sampling can miss short-lived or smaller
+loads and does not establish perfect isolation.
+
+The candidate was rejected: the component gains did not translate into clear
+HTTP gains on the target routes, while anonymous requests gained allocations.
+This is a screening decision, not evidence of a causal throughput regression.
+All 15,116,839 responses validated, including 10,737,954 timed responses, with
+zero errors or invalid responses. An independent audit recomputed the raw
+results and checked source/image provenance. The candidate passed 464 focused
+assertions with coverage probes and again after formatting, plus the upstream
+Chromium smoke test. Both candidate versions, compiler/allocation evidence,
+tests and measurements are preserved under
+`tmp/julia-full-server/2026-10-15-route-classification/` (ignored by Git).
+Production code and tests were restored to the baseline. No C, Rust, POST,
+source-line-count or full five-route HTTP comparison was run for this experiment.
+
 ## Rejected read-method guard experiment, 2026-10-15
 
 A second candidate moved bot-route and origin processing inside the existing
