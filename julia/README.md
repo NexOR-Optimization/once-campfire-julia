@@ -180,6 +180,91 @@ corresponding operations to packages. Source size reflects these implementation,
 dependency and formatting choices; it does not establish equivalent feature
 coverage or maintainability.
 
+## Corrected comparison: Julia `4,0`, Julia `2,2` and C, 2026-10-15
+
+The requested configuration was `4,0`, with no interactive threads. A fresh
+three-round comparison reruns all five routes against Julia `2,2` and C on the
+same Intel Core i7-12700K. The earlier `4,4` measurements below remain a separate
+historical result. These are medians, rounded to whole requests per second:
+
+| HTTP workload (requests/sec) | Julia `4,0` | Julia `2,2` | C |
+|---|---:|---:|---:|
+| Room page | 97,806 | 103,492 | 104,823 |
+| Messages page | 96,100 | 109,795 | 110,921 |
+| Sidebar | 105,851 | 117,438 | 116,795 |
+| Search | 102,955 | 111,165 | 114,767 |
+| Post a message | 5,397 | 6,130 | 4,747 |
+| Backend KLOC | 7.3 | 7.3 | 94.8 |
+
+Julia `2,2` has higher throughput than `4,0` on every measured route. Relative
+to C, its messages median is 1.02% lower and sidebar is 0.55% higher. Sidebar's
+small deficit in the previous run changes direction here; these differences
+are too small to establish a general winner. Its room/search medians are
+1.27%/3.14% lower than C, and POST throughput is 29.13% higher.
+
+| Median per-run p99 (ms) | Julia `4,0` | Julia `2,2` | C |
+|---|---:|---:|---:|
+| Room page | 0.275 | 0.227 | 0.321 |
+| Messages page | 0.286 | 0.236 | 0.314 |
+| Sidebar | 0.251 | 0.196 | 0.271 |
+| Search | 0.259 | 0.247 | 0.282 |
+| Post a message | 9.175 | 11.495 | 4.479 |
+
+C retains lower POST tail latency and substantially lower peak memory. Maximum
+container lifetime peaks are 2,843.0 MiB for `4,0`, 3,048.4 MiB for `2,2` and
+108.2 MiB for C. These include startup/JIT, warmup, earlier routes and differing
+message counts; they do not measure steady-state live heap or allocation per
+request. Julia `4,0` has lower POST p99 than `2,2` at lower throughput.
+
+Julia 1.13.1 sends requested interactive tasks to the default pool when the
+interactive pool has zero threads. Under `4,0`, socket and application tasks
+therefore share four workers. Under `2,2`, two workers and two interactive
+threads share the same four allocated server cores. Actual GC counts and
+automatic reader counts are four versus two; GC remains enabled and the total
+response-cache budget remains 64 MiB. This comparison changes those settings
+together and does not isolate their individual effects.
+
+The same image and runtime source serve both Julia columns. Each route uses
+10 seconds of warmup at four clients and 15 measured seconds at 16 clients.
+Three rounds rotate C/`4,0`/`2,2`, `4,0`/`2,2`/C, then `2,2`/C/`4,0`, with a
+fresh fixture copy per application-round. Server CPUs are `0,2,4,6`; client
+CPUs are `8,10,12,14`. Gzip, host networking, contracts and fixture match the
+preceding comparison; response bytes and native thread counts can differ.
+All writers use `NORMAL` on tmpfs, while Julia's default remains `FULL`.
+Durable-disk cost, mixed traffic and real-provider notification delivery are
+not measured. HTTP write audits do not establish equal background-job completion.
+
+All 85,873,050 responses, including 58,969,779 timed responses, validate with
+zero errors or invalid responses. Independent read-only audits verify all
+1,194,890 acknowledged writes across 18 receipt files and nine databases,
+including exact IDs, rooms, rich-text and FTS bodies, no extra writes, integrity
+and unchanged database/WAL hashes. The unchanged transport test passes 205
+assertions under `--threads=4,0`; the assertion requiring distinct interactive
+threads does not apply. The fresh unchanged Chromium smoke test also passes.
+
+Source revision is `76fb004`, with unchanged Julia image `sha256:c5c0e2d8aa29…`
+and runtime digest `7ecf3edc38e20ca43ec609e56ecf12698917794fc28db98b7adf246e955a9c8a`.
+C remains `873a51f`, image `sha256:820f3ef4f63e…`. Fresh image/source checks
+confirm those identities. The KLOC row reuses the verified 7,294/94,816 backend
+line counts below after checking that counted source files are unchanged; no
+production or test code changed. Evidence is retained under
+`tmp/julia-full-server/2026-10-15-four-zero/` (ignored by Git), excluding runtime
+databases, storage and credentials. Before timing, five Julia directories from
+the earlier excluded failed run were moved to workspace storage with exact
+file/hash verification and original-path symlinks to free tmpfs user quota.
+
+The next candidate for messages/sidebar is an autocommit-only cache-hit path:
+omit explicit `BEGIN`/`COMMIT` around the single authorization SELECT while
+retaining fresh authentication, membership checks and both observer-generation
+checks. This would reduce five SQLite command executions to three per hit;
+it does not imply a proportional whole-server gain. It requires a fresh statement
+snapshot, no unfinished statements, unchanged miss transactions, and tests for
+revocation and external commits between checks. A separate `4,0` candidate is
+direct response preparation when the connection already runs on the worker
+pool, avoiding an extra task while checking fairness and exception handling.
+Both are unimplemented hypotheses. Cached hits already skip rendering and gzip;
+profile the request overhead before adding SIMD or rendering specializations.
+
 ## Full local comparison: Julia `4,4`, Julia `2,2` and C, 2026-10-15
 
 Fresh measurements on this machine's **Intel Core i7-12700K**, with the same
